@@ -15,6 +15,8 @@
 - 逐块标注语种：不同语种不同颜色框 + 标签
 - 左上角汇总各语种占比 + 是否混语提示
 - 文字太小 / 模糊 / 置信度低 → 标注「未识别」，绝不乱猜语种
+- **设置窗口**（⌘,）：勾选启用的识别语种、调节 OCR/语种置信度阈值与文字最小高度、开关「识别后自动打开预览」，配置持久化
+- **历史记录窗口**：列表查看历次识别的主体语种 / 占比 / 是否混语 / 标注图快照，可重新打开或一键清空
 
 ### 覆盖语种
 
@@ -24,8 +26,12 @@
 
 ```
 lang-detect-mac/
-├── LangBarApp.swift        # App 主源码（菜单栏常驻 + 截图 OCR + 语种标注）
-├── build_app.sh            # 一键编译打包脚本，产出「语种识别.app」
+├── LangBarApp.swift        # App 主源码（菜单栏常驻 + 截图 OCR + 语种标注 + 菜单入口）
+├── Settings.swift          # 全局设置存储（语种开关 / 阈值 / 行为，持久化到 UserDefaults）
+├── SettingsWindow.swift    # 设置窗口 GUI（语种勾选 + 阈值滑块 + 恢复默认）
+├── HistoryStore.swift      # 识别历史存储（元数据 + 标注图快照）
+├── HistoryWindow.swift     # 历史记录窗口 GUI（列表 + 详情预览 + 清空）
+├── build_app.sh            # 一键编译打包脚本（编译目录下全部 .swift），产出「语种识别.app」
 ├── fix_all.sh              # 常见问题一键修复脚本
 ├── README.md
 └── Resources/

@@ -45,17 +45,8 @@ let langColor: [String: NSColor] = [
 ]
 func color(_ code: String) -> NSColor { langColor[code] ?? .gray }
 
-let targetLangs: [NLLanguage] = [
-    .italian, .portuguese, .vietnamese, .indonesian,
-    .japanese, .korean, .thai, .arabic,
-    .german, .french, .english,
-    .simplifiedChinese, .traditionalChinese
-]
-
-// 置信度阈值：低于此值判为「未识别」，绝不乱猜
-let OCR_CONFIDENCE_MIN: Float = 0.30       // Vision OCR 单块置信度下限
-let NL_PROB_MIN: Double = 0.55             // NaturalLanguage 语种概率下限（拉丁语系）
-let MIN_TEXT_HEIGHT_RATIO: CGFloat = 0.008 // 文字太小（相对整图高度）判为未识别
+// 注：目标语种与各项阈值已抽到 Settings.swift，可在「设置」窗口配置并持久化。
+//    下方逻辑统一从 Settings.shared 读取运行期取值。
 
 // ============================================================
 // MARK: - 脚本归类 + 语种判定
@@ -138,11 +129,11 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
     let letters = latinLetters
     if letters >= 3 {
         let r = NLLanguageRecognizer()
-        r.languageConstraints = targetLangs
+        r.languageConstraints = Settings.shared.targetNLLanguages
         r.processString(t)
         let hyp = r.languageHypotheses(withMaximum: 1)
         if let lang = r.dominantLanguage?.rawValue,
-           let prob = hyp[NLLanguage(lang)], prob >= NL_PROB_MIN {
+           let prob = hyp[NLLanguage(lang)], prob >= Settings.shared.nlProbMin {
             return (lang.hasPrefix("zh") ? "zh" : lang, true)
         }
     }
@@ -154,7 +145,7 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
     if letters < 2 { return ("und", false) }
     // ⑥ 仍拿不准的拉丁普通词 → 用 NL 的首选（即使概率偏低），给出"对应语种"而非未识别
     let r2 = NLLanguageRecognizer()
-    r2.languageConstraints = targetLangs
+    r2.languageConstraints = Settings.shared.targetNLLanguages
     r2.processString(t)
     if let lang = r2.dominantLanguage?.rawValue {
         return (lang.hasPrefix("zh") ? "zh" : lang, true)
@@ -196,9 +187,12 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
                 var lang: String
                 let (guessed, ok) = detectBlockLang(s)
                 // 三重不猜条件：OCR置信度低 / 文字太小 / 语种判定不可信
-                if cand.confidence < OCR_CONFIDENCE_MIN ||
-                   o.boundingBox.height < MIN_TEXT_HEIGHT_RATIO ||
+                if cand.confidence < Settings.shared.ocrConfidenceMin ||
+                   o.boundingBox.height < Settings.shared.minTextHeightRatio ||
                    !ok {
+                    lang = "und"
+                } else if allLangCodes.contains(guessed) && !Settings.shared.isEnabled(guessed) {
+                    // 用户在设置里关闭了该语种 → 不标注具体语种
                     lang = "und"
                 } else {
                     lang = guessed
@@ -417,6 +411,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(capItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "打开上次标注图", action: #selector(openLast), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "历史记录…", action: #selector(openHistory), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "关于 / 使用说明", action: #selector(about), keyEquivalent: "").target = self
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q").target = self
@@ -481,8 +478,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                     msg: "⚠️ 几乎没识别到文字。\n请框住清晰的文字区域，或把图放大后再框。")
                     return
                 }
-                // 打开标注图
-                if FileManager.default.fileExists(atPath: r.annotatedPath) {
+                // 记录到历史
+                HistoryStore.shared.add(mainLang: r.mainLang, mixed: r.mixed,
+                                        blockCount: r.blockCount, breakdown: r.breakdown,
+                                        annotatedPath: r.annotatedPath)
+                // 打开标注图（可在设置中关闭自动打开）
+                if Settings.shared.autoOpenPreview,
+                   FileManager.default.fileExists(atPath: r.annotatedPath) {
                     self.openInPreview(r.annotatedPath)
                 }
                 // 汇总弹窗
@@ -516,6 +518,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func openSettings() {
+        SettingsWindowController.shared.show()
+    }
+
+    @objc func openHistory() {
+        HistoryWindowController.shared.show()
+    }
+
     @objc func about() {
         showDialog(title: "语种识别 · 使用说明", msg: """
         触发方式：点菜单栏图标 →「截图识别语种」，或按全局快捷键 ⌃⌥L（Control+Option+L）。
@@ -527,6 +537,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         • 纯数字（如 2024）→ 标「数字」
         • 左上角显示各语种占比 + 是否混语
         • 仅当文字太小/模糊/OCR 不确定时才标「未识别」（虚线灰框），不会乱猜
+
+        新增：
+        • 「设置…」（⌘,）：勾选识别语种、调节 OCR/语种置信度阈值、文字最小高度、是否自动打开预览
+        • 「历史记录…」：查看历次识别的主体语种/占比/标注图，可重新打开或清空
 
         首次使用需在「系统设置 → 隐私与安全性 → 屏幕录制」中勾选本 App。
         """)
@@ -567,7 +581,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// 多文件编译下顶层语句不被允许，改用 @main 入口
+@main
+struct LangBarMain {
+    static let delegate = AppDelegate()   // static 持有，避免被释放
+    static func main() {
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.run()
+    }
+}
