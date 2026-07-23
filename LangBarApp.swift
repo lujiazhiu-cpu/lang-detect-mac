@@ -385,7 +385,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let img = NSImage(size: NSSize(width: 22, height: 22))
                 var added = false
                 for name in ["menubar_icon.png", "menubar_icon@2x.png"] {
-                    if let rep = NSBitmapImageRep(contentsOfFile: resDir + "/" + name) {
+                    if let d = try? Data(contentsOf: URL(fileURLWithPath: resDir + "/" + name)),
+                       let rep = NSBitmapImageRep(data: d) {
                         rep.size = NSSize(width: 22, height: 22)  // 两个位图都声明为 22pt，像素差(22/44)=密度
                         img.addRepresentation(rep)
                         added = true
