@@ -506,27 +506,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                     msg: "⚠️ 几乎没识别到文字。\n请框住清晰的文字区域，或把图放大后再框。")
                     return
                 }
-                // 汇总弹窗（先展示文字结果；关闭后再弹出可点击关闭的标注图窗口，
-                // 避免 alert 抢占焦点导致标注图窗口被 windowDidResignKey 立即关闭）
-                let total = r.breakdown.reduce(0) { $0 + $1.1 }
-                var lines: [String] = []
-                for (code, cnt) in r.breakdown {
-                    let pct = total > 0 ? Int((Double(cnt) / Double(total) * 100).rounded()) : 0
-                    lines.append("\(cnName(code))  \(pct)%")
-                }
-                let breakStr = lines.isEmpty ? "（无可信语种）" : lines.joined(separator: "\n")
-                let msg = """
-                主体语种：\(cnName(r.mainLang))
-                是否混语：\(r.mixed ? "是" : "否")
-                文本块数：\(r.blockCount)
-
-                各语种占比：
-                \(breakStr)
-
-                （点击标注图窗口的任意位置，或点击窗口外部，即可关闭；每块文字旁标了语种；专名=人名/地名，数字=纯数字，虚线灰框=未识别）
-                """
-                self.showDialog(title: "语种识别结果", msg: msg)
-                // 关闭汇总弹窗后再展示标注图（自定义窗口，点击任意处关闭）
+                // 识别完成后直接打开标注图窗口（自定义窗口，点击任意处关闭），不再弹汇总 Alert
                 if FileManager.default.fileExists(atPath: r.annotatedPath) {
                     self.openInPreview(r.annotatedPath)
                 }
