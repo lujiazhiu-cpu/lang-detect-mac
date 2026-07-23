@@ -6,9 +6,10 @@
 //   2) 框选区域 OCR（Apple Vision，原始像素、关闭纠错、自动语种检测）
 //   3) 逐块标注语种（不同语种不同颜色框 + 标签），左上角汇总各语种占比 + 是否混语
 //   4) 文字太小/模糊/置信度低 → 标注「未识别」，绝不乱猜语种
+//   5) 中文文字自动跳过：不识别、不标注、不计入占比统计
 //
 // 覆盖语种：意 it / 葡 pt / 越 vi / 印尼 id / 日 ja / 韩 ko /
-//          泰 th / 阿 ar / 德 de / 法 fr / 英 en（另可识别中文）
+//          泰 th / 阿 ar / 德 de / 法 fr / 英 en（中文自动跳过）
 //
 // 底层：Apple Vision（OCR，含逐块位置+置信度）+ Apple NaturalLanguage（语种判定）
 //
@@ -50,6 +51,13 @@ let targetLangs: [NLLanguage] = [
     .japanese, .korean, .thai, .arabic,
     .german, .french, .english,
     .simplifiedChinese, .traditionalChinese
+]
+
+// 允许输出的语种白名单：NaturalLanguage 偶尔会返回目标集外的杂语
+// （如荷兰语 nl / 斯洛伐克语 sk），凡不在此集合内的结果一律不采信，避免误判。
+let allowedLangCodes: Set<String> = [
+    "it", "pt", "vi", "id", "ja", "ko", "th", "ar",
+    "de", "fr", "en", "zh"
 ]
 
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
@@ -99,6 +107,13 @@ func isProperNounLike(_ text: String) -> Bool {
     return hasLetter
 }
 
+// 拉丁文本按空白分词并去除首尾标点，返回有效 token 列表
+func latinTokens(_ text: String) -> [String] {
+    return text.split { $0 == " " || $0 == "\n" || $0 == "\t" }
+        .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?\"'()[]{}·—-")) }
+        .filter { !$0.isEmpty }
+}
+
 // 返回 (语种code, 是否可信)
 // 分类桶：具体语种 / name(专名) / num(数字) / und(未识别)
 func detectBlockLang(_ text: String) -> (String, Bool) {
@@ -134,30 +149,43 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
     if nonLatinTotal >= latinLetters, let top = scriptCount.max(by: { $0.value < $1.value }) {
         return (top.key, true)
     }
-    // ③ 拉丁字母为主 → 先用 NaturalLanguage
+    // ③ 拉丁字母为主：短文本（尤其是单词专名/缩写/编号）NaturalLanguage 极易误判
+    //    （如 Rosengarten→荷兰语、SODDY→斯洛伐克语、Mo.→印尼语）。
+    //    因此先做专名判定：单 token 且像专名/缩写/编号时直接判专名，不交给 NL 乱猜。
     let letters = latinLetters
+    let tokens = latinTokens(t)
+    if tokens.count <= 1 && isProperNounLike(t) {
+        return ("name", true)
+    }
+    // ④ 多词/普通词：用 NaturalLanguage 判定，结果必须落在目标语种白名单内
     if letters >= 3 {
         let r = NLLanguageRecognizer()
         r.languageConstraints = targetLangs
         r.processString(t)
         let hyp = r.languageHypotheses(withMaximum: 1)
-        if let lang = r.dominantLanguage?.rawValue,
-           let prob = hyp[NLLanguage(lang)], prob >= NL_PROB_MIN {
-            return (lang.hasPrefix("zh") ? "zh" : lang, true)
+        if let lang = r.dominantLanguage?.rawValue {
+            let code = lang.hasPrefix("zh") ? "zh" : lang
+            let prob = hyp[NLLanguage(lang)] ?? 0
+            // 文本越长越可信：长文本(≥12字母)放宽概率下限，短文本仍要求较高置信
+            let need = letters >= 12 ? 0.50 : NL_PROB_MIN
+            if allowedLangCodes.contains(code) && prob >= need {
+                return (code, true)
+            }
         }
     }
-    // ④ 语种判不准，但明显是专名/缩写/编号 → 标为专名（英语人名/地名），不算未识别
+    // ⑤ NL 判不准，但整体是专名/缩写/编号（如多词全大写 ARS SGN）→ 专名
     if isProperNounLike(t) {
         return ("name", true)
     }
-    // ⑤ 拉丁文本但太短或纯符号 → 未识别
+    // ⑥ 太短的拉丁碎片 → 未识别
     if letters < 2 { return ("und", false) }
-    // ⑥ 仍拿不准的拉丁普通词 → 用 NL 的首选（即使概率偏低），给出"对应语种"而非未识别
+    // ⑦ 仍拿不准：取 NL 首选（限定目标白名单内），否则未识别
     let r2 = NLLanguageRecognizer()
     r2.languageConstraints = targetLangs
     r2.processString(t)
     if let lang = r2.dominantLanguage?.rawValue {
-        return (lang.hasPrefix("zh") ? "zh" : lang, true)
+        let code = lang.hasPrefix("zh") ? "zh" : lang
+        if allowedLangCodes.contains(code) { return (code, true) }
     }
     return ("und", false)
 }
@@ -195,6 +223,8 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
                 // 判定语种可信度
                 var lang: String
                 let (guessed, ok) = detectBlockLang(s)
+                // 中文片段：直接跳过，不识别、不标注、不计入统计
+                if guessed == "zh" { continue }
                 // 三重不猜条件：OCR置信度低 / 文字太小 / 语种判定不可信
                 if cand.confidence < OCR_CONFIDENCE_MIN ||
                    o.boundingBox.height < MIN_TEXT_HEIGHT_RATIO ||
@@ -581,7 +611,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         触发方式：点菜单栏图标 →「截图识别语种」，或按全局快捷键 ⌃⌥L（Control+Option+L）。
         框选屏幕上带文字的区域即可。
 
-        • 覆盖语种：意/葡/越/印尼/日/韩/泰/阿/德/法/英（另可识别中文）
+        • 覆盖语种：意/葡/越/印尼/日/韩/泰/阿/德/法/英
+        • 中文文字：自动跳过，不识别、不标注、不计入占比统计
         • 每块文字旁标注语种，不同语种不同颜色
         • 人名/地名/品牌/缩写（如 TROYE SIVAN、ARS）→ 标「英语（人名/地名）」
         • 纯数字（如 2024）→ 标「数字」
