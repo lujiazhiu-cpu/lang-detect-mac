@@ -364,14 +364,39 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
 }
 
 // ============================================================
+// MARK: - 结果展示窗口（点击任意处关闭）
+// ============================================================
+
+// 无边框窗口：需允许成为 key/main，否则无法接收鼠标事件
+final class ResultWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+// 容器视图：拦截整块区域的鼠标点击（含图片区域），点击即关闭窗口
+final class ClickToCloseView: NSView {
+    weak var targetWindow: NSWindow?
+    var onClose: (() -> Void)?
+    // 让所有点击都落到本视图（子视图 NSImageView 不再单独吞掉事件），
+    // 从而实现「点击窗口内任意位置（含图片）都能关闭」
+    override func hitTest(_ point: NSPoint) -> NSView? { self }
+    override func mouseDown(with event: NSEvent) { onClose?() }
+    override func rightMouseDown(with event: NSEvent) { onClose?() }
+}
+
+// ============================================================
 // MARK: - 菜单栏 App
 // ============================================================
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
     var hotKeyRef: EventHotKeyRef?
     let shotPath = NSTemporaryDirectory() + "langbar_shot.png"
     let annoPath = NSTemporaryDirectory() + "langbar_annotated.png"
+
+    // 结果窗口 + 窗口外点击监听
+    var resultWindow: NSWindow?
+    var globalClickMonitor: Any?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 无 Dock 图标
@@ -481,11 +506,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                     msg: "⚠️ 几乎没识别到文字。\n请框住清晰的文字区域，或把图放大后再框。")
                     return
                 }
-                // 打开标注图
-                if FileManager.default.fileExists(atPath: r.annotatedPath) {
-                    self.openInPreview(r.annotatedPath)
-                }
-                // 汇总弹窗
+                // 汇总弹窗（先展示文字结果；关闭后再弹出可点击关闭的标注图窗口，
+                // 避免 alert 抢占焦点导致标注图窗口被 windowDidResignKey 立即关闭）
                 let total = r.breakdown.reduce(0) { $0 + $1.1 }
                 var lines: [String] = []
                 for (code, cnt) in r.breakdown {
@@ -501,9 +523,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 各语种占比：
                 \(breakStr)
 
-                （标注图已用「预览」打开，每块文字旁标了语种；专名=人名/地名，数字=纯数字，虚线灰框=未识别）
+                （点击标注图窗口的任意位置，或点击窗口外部，即可关闭；每块文字旁标了语种；专名=人名/地名，数字=纯数字，虚线灰框=未识别）
                 """
                 self.showDialog(title: "语种识别结果", msg: msg)
+                // 关闭汇总弹窗后再展示标注图（自定义窗口，点击任意处关闭）
+                if FileManager.default.fileExists(atPath: r.annotatedPath) {
+                    self.openInPreview(r.annotatedPath)
+                }
             }
         }
     }
@@ -542,19 +568,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // 用「预览」独立窗口打开标注图（每次新开一份，不叠加到屏幕/网页上）
+    // 自定义窗口展示标注图：点击窗口内任意位置（含图片区域）或点击窗口外部即可关闭，
+    // 无需点左上角关闭按钮。窗口无边框、自适应图片尺寸、居中、带圆角与阴影。
     func openInPreview(_ path: String) {
-        // 每次复制成带时间戳的新文件，保证「预览」弹出的是一张独立静态图片窗口
-        let stamp = Int(Date().timeIntervalSince1970)
-        let dst = NSTemporaryDirectory() + "语种标注_\(stamp).png"
-        try? FileManager.default.removeItem(atPath: dst)
-        try? FileManager.default.copyItem(atPath: path, toPath: dst)
-        let target = FileManager.default.fileExists(atPath: dst) ? dst : path
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-a", "Preview", target]   // 强制用「预览」打开为独立窗口
-        do { try task.run() }
-        catch { NSWorkspace.shared.open(URL(fileURLWithPath: target)) }
+        guard let image = NSImage(contentsOfFile: path) else {
+            // 兜底：读图失败则退回系统默认方式打开
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            return
+        }
+
+        // 先关闭上一次的结果窗口，避免叠加
+        closeResultWindow()
+
+        // 计算窗口尺寸：自适应图片，但不超过屏幕可视区域的 85%
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let maxW = visible.width * 0.85
+        let maxH = visible.height * 0.85
+        var imgSize = image.size
+        if imgSize.width <= 0 || imgSize.height <= 0 { imgSize = NSSize(width: 800, height: 600) }
+        let scale = min(maxW / imgSize.width, maxH / imgSize.height, 1.0)
+        let winSize = NSSize(width: floor(imgSize.width * scale),
+                             height: floor(imgSize.height * scale))
+
+        // 无边框窗口（透明背景，便于展示圆角与阴影）
+        let win = ResultWindow(contentRect: NSRect(origin: .zero, size: winSize),
+                               styleMask: [.borderless],
+                               backing: .buffered, defer: false)
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.hasShadow = true                 // 轻微阴影
+        win.level = .floating                // 浮在其它窗口之上
+        win.isReleasedWhenClosed = false
+        win.delegate = self
+
+        // 圆角容器（点击任意位置关闭）
+        let container = ClickToCloseView(frame: NSRect(origin: .zero, size: winSize))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.masksToBounds = true
+        container.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        container.targetWindow = win
+        container.onClose = { [weak self] in self?.closeResultWindow() }
+
+        let imageView = NSImageView(frame: container.bounds)
+        imageView.image = image
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.autoresizingMask = [.width, .height]
+        container.addSubview(imageView)
+
+        win.contentView = container
+        win.center()
+
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+        resultWindow = win
+
+        // 点击「窗口外部 / 其它 App」也关闭：监听全局鼠标按下事件
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.closeResultWindow()
+        }
+    }
+
+    // 关闭结果窗口并清理全局点击监听
+    func closeResultWindow() {
+        if let m = globalClickMonitor {
+            NSEvent.removeMonitor(m)
+            globalClickMonitor = nil
+        }
+        resultWindow?.orderOut(nil)
+        resultWindow?.close()
+        resultWindow = nil
+    }
+
+    // 结果窗口失去焦点（点了别处/切到别的 App）时也关闭
+    func windowDidResignKey(_ notification: Notification) {
+        if let w = notification.object as? NSWindow, w === resultWindow {
+            closeResultWindow()
+        }
     }
 
     func showDialog(title: String, msg: String) {
