@@ -397,6 +397,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // 结果窗口 + 窗口外点击监听
     var resultWindow: NSWindow?
     var globalClickMonitor: Any?
+    // 记录本次截图所在的屏幕，供汇总弹窗 / 标注图窗口定位到同一块屏幕
+    var captureScreen: NSScreen?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 无 Dock 图标
@@ -493,6 +495,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         guard FileManager.default.fileExists(atPath: shotPath) else { return }  // 用户取消
 
+        // 记录截图所在屏幕：截图刚结束时鼠标停留处即用户框选结束的屏幕
+        // （screencapture -i 不回传框选矩形，故用鼠标位置判定，fallback 到主屏）
+        self.captureScreen = self.targetScreen()
+
         // 异步做 OCR，避免卡 UI
         DispatchQueue.global(qos: .userInitiated).async {
             let result = runDetect(shotPath: self.shotPath, annoPath: self.annoPath)
@@ -506,12 +512,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                     msg: "⚠️ 几乎没识别到文字。\n请框住清晰的文字区域，或把图放大后再框。")
                     return
                 }
-                // 识别完成后直接打开标注图窗口（自定义窗口，点击任意处关闭），不再弹汇总 Alert
-                if FileManager.default.fileExists(atPath: r.annotatedPath) {
-                    self.openInPreview(r.annotatedPath)
+                // 汇总弹窗（双按钮）：显示在截图所在屏幕
+                let total = r.breakdown.reduce(0) { $0 + $1.1 }
+                var lines: [String] = []
+                for (code, cnt) in r.breakdown {
+                    let pct = total > 0 ? Int((Double(cnt) / Double(total) * 100).rounded()) : 0
+                    lines.append("\(cnName(code))  \(pct)%")
                 }
+                let breakStr = lines.isEmpty ? "（无可信语种）" : lines.joined(separator: "\n")
+                let msg = """
+                主体语种：\(cnName(r.mainLang))
+                是否混语：\(r.mixed ? "是" : "否")
+                文本块数：\(r.blockCount)
+
+                各语种占比：
+                \(breakStr)
+
+                （专名=人名/地名，数字=纯数字，虚线灰框=未识别）
+                """
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert()
+                alert.messageText = "语种识别结果"
+                alert.informativeText = msg
+                alert.addButton(withTitle: "查看详细标注")   // 左：默认按钮 → 打开标注图
+                alert.addButton(withTitle: "好的")           // 右：取消按钮 → 直接关闭
+                // 布局后把弹窗居中到截图所在屏幕，再走模态（runModal(for:) 不会重新居中）
+                alert.layout()
+                self.center(alert.window, on: self.captureScreen)
+                let resp = NSApp.runModal(for: alert.window)
+                alert.window.orderOut(nil)
+                if resp == .alertFirstButtonReturn {
+                    // 「查看详细标注」→ 打开标注图窗口
+                    if FileManager.default.fileExists(atPath: r.annotatedPath) {
+                        self.openInPreview(r.annotatedPath)
+                    }
+                }
+                // 「好的」(.alertSecondButtonReturn) → 什么都不做，直接关闭
             }
         }
+    }
+
+    // 找到截图/操作所在的屏幕：优先鼠标当前所在屏幕，fallback 到主屏
+    func targetScreen() -> NSScreen? {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
+    }
+
+    // 把窗口居中到指定屏幕的可视区域；screen 为空则回退到系统默认居中
+    func center(_ window: NSWindow, on screen: NSScreen?) {
+        guard let screen = screen else { window.center(); return }
+        let vf = screen.visibleFrame
+        let f = window.frame
+        let x = vf.origin.x + (vf.width - f.width) / 2
+        let y = vf.origin.y + (vf.height - f.height) / 2
+        window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     @objc func openLast() {
@@ -560,8 +614,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 先关闭上一次的结果窗口，避免叠加
         closeResultWindow()
 
-        // 计算窗口尺寸：自适应图片，但不超过屏幕可视区域的 85%
-        let screen = NSScreen.main ?? NSScreen.screens.first
+        // 计算窗口尺寸：自适应图片，但不超过（截图所在）屏幕可视区域的 85%
+        let screen = captureScreen ?? targetScreen() ?? NSScreen.main ?? NSScreen.screens.first
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let maxW = visible.width * 0.85
         let maxH = visible.height * 0.85
@@ -598,7 +652,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         container.addSubview(imageView)
 
         win.contentView = container
-        win.center()
+        center(win, on: screen)   // 居中到截图所在屏幕
 
         NSApp.activate(ignoringOtherApps: true)
         win.makeKeyAndOrderFront(nil)
