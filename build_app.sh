@@ -60,7 +60,7 @@ if swiftc -O -o "$APP/Contents/MacOS/$EXEC_NAME" \
         -framework Vision -framework NaturalLanguage \
         -framework AppKit -framework ImageIO \
         -framework UserNotifications -framework Carbon \
-        "$SWIFT_SRC" 2>/tmp/langbar_build.log; then
+        "$SRC_DIR"/*.swift 2>/tmp/langbar_build.log; then
     echo "     ✅ 编译成功（真正可运行的菜单栏 App）"
 else
     echo "❌ 编译失败，日志如下："
@@ -113,8 +113,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>     <string>$APP_NAME</string>
     <key>CFBundleExecutable</key>      <string>$EXEC_NAME</string>
     <key>CFBundleIdentifier</key>      <string>com.aime.langbar</string>
-    <key>CFBundleVersion</key>         <string>1.2</string>
-    <key>CFBundleShortVersionString</key> <string>1.2</string>
+    <key>CFBundleVersion</key>         <string>1.3</string>
+    <key>CFBundleShortVersionString</key> <string>1.3</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
 $ICON_KEY
     <key>LSMinimumSystemVersion</key>  <string>11.0</string>
