@@ -364,6 +364,8 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var hotKeyRef: EventHotKeyRef?
+    var hotKeyHandlerInstalled = false
+    var captureMenuItem: NSMenuItem?
     let shotPath = NSTemporaryDirectory() + "langbar_shot.png"
     let annoPath = NSTemporaryDirectory() + "langbar_annotated.png"
 
@@ -400,14 +402,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     btn.title = "文A"
                 }
             }
-            btn.toolTip = "截图识别语种（⌃⌥L）"
+            btn.toolTip = "截图识别语种（\(Settings.shared.hotKeyDisplayString)）"
         }
 
         let menu = NSMenu()
-        // 菜单里展示全局快捷键提示（⌃⌥L），实际由下面的 RegisterEventHotKey 全局注册
-        let capItem = NSMenuItem(title: "📸 截图识别语种", action: #selector(capture), keyEquivalent: "l")
-        capItem.keyEquivalentModifierMask = [.control, .option]
+        // 菜单里展示全局快捷键提示（跟随设置），实际由下面的 RegisterEventHotKey 全局注册
+        let capItem = NSMenuItem(title: "📸 截图识别语种",
+                                 action: #selector(capture),
+                                 keyEquivalent: menuKeyEquivalent(for: Settings.shared.hotKeyCode))
+        capItem.keyEquivalentModifierMask = cocoaModifiers(fromCarbon: Settings.shared.hotKeyModifiers)
         capItem.target = self
+        captureMenuItem = capItem
         menu.addItem(capItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "打开上次标注图", action: #selector(openLast), keyEquivalent: "").target = self
@@ -419,23 +424,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
 
+        // 监听设置窗口发出的快捷键变更通知，实时重新注册
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(hotKeyChanged),
+                                               name: .hotKeyChanged,
+                                               object: nil)
         registerGlobalHotKey()
     }
 
-    // 注册全局快捷键 ⌃⌥L（Control+Option+L），不与浏览器 ⌘D 冲突，且全系统任意 App 前台都能触发
+    // 注册全局快捷键（跟随 Settings.shared），可重复调用实现「改完实时生效」
     func registerGlobalHotKey() {
+        // 事件处理器只安装一次
+        if !hotKeyHandlerInstalled {
+            let hotKeyID = EventHotKeyID(signature: OSType(0x4c414e47) /* 'LANG' */, id: 1)
+            _ = hotKeyID
+            var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                          eventKind: OSType(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { (_, _, userData) -> OSStatus in
+                guard let userData = userData else { return noErr }
+                let me = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+                DispatchQueue.main.async { me.capture() }
+                return noErr
+            }, 1, &eventSpec, Unmanaged.passUnretained(self).toOpaque(), nil)
+            hotKeyHandlerInstalled = true
+        }
+
+        // 先注销旧热键，再按当前设置注册新的
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
         let hotKeyID = EventHotKeyID(signature: OSType(0x4c414e47) /* 'LANG' */, id: 1)
-        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                      eventKind: OSType(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { (_, _, userData) -> OSStatus in
-            guard let userData = userData else { return noErr }
-            let me = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { me.capture() }
-            return noErr
-        }, 1, &eventSpec, Unmanaged.passUnretained(self).toOpaque(), nil)
-        // kVK_ANSI_L = 37；controlKey | optionKey 为 Carbon 修饰键掩码
-        RegisterEventHotKey(UInt32(kVK_ANSI_L), UInt32(controlKey | optionKey),
+        RegisterEventHotKey(Settings.shared.hotKeyCode, Settings.shared.hotKeyModifiers,
                             hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
+    }
+
+    // 快捷键变更：重新注册全局热键，并同步菜单项与状态栏提示
+    @objc func hotKeyChanged() {
+        registerGlobalHotKey()
+        captureMenuItem?.keyEquivalent = menuKeyEquivalent(for: Settings.shared.hotKeyCode)
+        captureMenuItem?.keyEquivalentModifierMask = cocoaModifiers(fromCarbon: Settings.shared.hotKeyModifiers)
+        statusItem?.button?.toolTip = "截图识别语种（\(Settings.shared.hotKeyDisplayString)）"
     }
 
     @objc func capture() {
@@ -522,8 +551,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func about() {
         showDialog(title: "语种识别 · 使用说明", msg: """
-        触发方式：点菜单栏图标 →「截图识别语种」，或按全局快捷键 ⌃⌥L（Control+Option+L）。
-        框选屏幕上带文字的区域即可。
+        触发方式：点菜单栏图标 →「截图识别语种」，或按全局快捷键 \(Settings.shared.hotKeyDisplayString)。
+        框选屏幕上带文字的区域即可。（快捷键可在「设置…」里自定义）
 
         • 覆盖语种：意/葡/越/印尼/日/韩/泰/阿/德/法/英（另可识别中文）
         • 每块文字旁标注语种，不同语种不同颜色

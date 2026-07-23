@@ -19,8 +19,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var autoOpenCheck: NSButton!
     private var langChecks: [(code: String, button: NSButton)] = []
 
+    // 快捷键设置
+    private var hotKeyValueLabel: NSTextField!
+    private var hotKeyButton: NSButton!
+    private var hotKeyMonitor: Any?
+    private var capturingHotKey = false
+
     convenience init() {
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720),
                            styleMask: [.titled, .closable, .miniaturizable],
                            backing: .buffered, defer: false)
         win.title = "语种识别 · 设置"
@@ -125,6 +131,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         root.addArrangedSubview(makeSeparator())
 
+        // —— 快捷键 ——
+        root.addArrangedSubview(sectionTitle("触发快捷键"))
+        let hkRow = NSStackView()
+        hkRow.orientation = .horizontal
+        hkRow.spacing = 12
+        let hkLead = NSTextField(labelWithString: "截图识别快捷键")
+        hkLead.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        hotKeyValueLabel = NSTextField(labelWithString: Settings.shared.hotKeyDisplayString)
+        hotKeyValueLabel.font = NSFont.boldSystemFont(ofSize: 14)
+        hotKeyValueLabel.alignment = .center
+        hotKeyValueLabel.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        hotKeyButton = NSButton(title: "更改…", target: self, action: #selector(changeHotKey))
+        hkRow.addArrangedSubview(hkLead)
+        hkRow.addArrangedSubview(hotKeyValueLabel)
+        hkRow.addArrangedSubview(hotKeyButton)
+        root.addArrangedSubview(hkRow)
+        root.addArrangedSubview(hint("点「更改…」后按下新的组合键（需至少一个修饰键，如 ⌃⌥⇧⌘）；按 Esc 取消。修改后立即生效"))
+
+        root.addArrangedSubview(makeSeparator())
+
         // —— 底部按钮 ——
         let bottom = NSStackView()
         bottom.orientation = .horizontal
@@ -179,6 +205,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         probSlider.doubleValue = s.nlProbMin
         heightSlider.doubleValue = Double(s.minTextHeightRatio)
         autoOpenCheck.state = s.autoOpenPreview ? .on : .off
+        if hotKeyValueLabel != nil {
+            hotKeyValueLabel.stringValue = s.hotKeyDisplayString
+        }
         refreshValueLabels()
     }
 
@@ -227,9 +256,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         Settings.shared.autoOpenPreview = (autoOpenCheck.state == .on)
     }
 
+    // MARK: - 快捷键捕获
+
+    @objc private func changeHotKey() {
+        if capturingHotKey { endCaptureHotKey(); return }
+        capturingHotKey = true
+        hotKeyButton.title = "按下新快捷键…"
+        hotKeyValueLabel.stringValue = "…"
+        hotKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] e in
+            guard let self = self else { return e }
+            // Esc 取消
+            if e.keyCode == 53 {
+                self.endCaptureHotKey()
+                return nil
+            }
+            let flags = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let carbon = carbonModifiers(from: flags)
+            // 要求至少一个修饰键，避免误捕获普通按键
+            guard carbon != 0 else {
+                NSSound.beep()
+                return nil
+            }
+            Settings.shared.hotKeyCode = UInt32(e.keyCode)
+            Settings.shared.hotKeyModifiers = carbon
+            self.endCaptureHotKey()
+            // 通知 App 重新注册全局热键，实时生效
+            NotificationCenter.default.post(name: .hotKeyChanged, object: nil)
+            return nil
+        }
+    }
+
+    private func endCaptureHotKey() {
+        if let m = hotKeyMonitor { NSEvent.removeMonitor(m); hotKeyMonitor = nil }
+        capturingHotKey = false
+        hotKeyButton.title = "更改…"
+        hotKeyValueLabel.stringValue = Settings.shared.hotKeyDisplayString
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if capturingHotKey { endCaptureHotKey() }
+    }
+
     @objc private func resetDefaults() {
         Settings.shared.resetToDefaults()
         syncFromSettings()
+        // 快捷键也恢复默认 → 通知重新注册
+        NotificationCenter.default.post(name: .hotKeyChanged, object: nil)
     }
 
     @objc private func closeWindow() {

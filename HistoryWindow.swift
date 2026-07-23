@@ -19,7 +19,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate,
     private var entries: [HistoryEntry] = []
 
     convenience init() {
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 520),
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 560),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
         win.title = "语种识别 · 历史记录"
@@ -61,27 +61,27 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate,
         scroll.documentView = table
         content.addSubview(scroll)
 
-        // 右侧详情
-        let rightStack = NSStackView()
-        rightStack.orientation = .vertical
-        rightStack.alignment = .leading
-        rightStack.spacing = 10
-        rightStack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        rightStack.translatesAutoresizingMaskIntoConstraints = false
-
+        // 右侧详情：文字说明 + 标注图预览
+        // 直接把控件加到 content 并用约束框定四边，避免图片以原始像素尺寸撑破窗口
         detailLabel = NSTextField(labelWithString: "从左侧选择一条记录查看详情")
         detailLabel.font = NSFont.systemFont(ofSize: 13)
         detailLabel.lineBreakMode = .byWordWrapping
         detailLabel.maximumNumberOfLines = 0
-        rightStack.addArrangedSubview(detailLabel)
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        // 允许在窗口变窄时被压缩换行，而不是把窗口撑宽
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        content.addSubview(detailLabel)
 
         imageView = NSImageView()
         imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.imageAlignment = .alignCenter
         imageView.translatesAutoresizingMaskIntoConstraints = false
+        // 关键：让图片视图不以原图尺寸驱动布局，而是被窗口/约束框定后自适应缩放
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
         imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        rightStack.addArrangedSubview(imageView)
-
-        content.addSubview(rightStack)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        content.addSubview(imageView)
 
         // 底部工具条
         let toolbar = NSStackView()
@@ -107,10 +107,14 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate,
             scroll.widthAnchor.constraint(equalToConstant: 280),
             scroll.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -10),
 
-            rightStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 4),
-            rightStack.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 12),
-            rightStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            rightStack.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -10),
+            detailLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            detailLabel.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 12),
+            detailLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+
+            imageView.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 10),
+            imageView.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 12),
+            imageView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            imageView.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -10),
 
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             toolbar.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
