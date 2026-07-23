@@ -25,7 +25,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate,
         win.title = "语种识别 · 历史记录"
         self.init(window: win)
         win.delegate = self
-        win.minSize = NSSize(width: 680, height: 400)
+        win.minSize = NSSize(width: 360, height: 240)
         buildUI()
     }
 

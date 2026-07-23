@@ -482,12 +482,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 HistoryStore.shared.add(mainLang: r.mainLang, mixed: r.mixed,
                                         blockCount: r.blockCount, breakdown: r.breakdown,
                                         annotatedPath: r.annotatedPath)
-                // 打开标注图（可在设置中关闭自动打开）
-                if Settings.shared.autoOpenPreview,
-                   FileManager.default.fileExists(atPath: r.annotatedPath) {
-                    self.openInPreview(r.annotatedPath)
-                }
-                // 汇总弹窗
+                // 汇总弹窗（标注图改为点「查看详情」手动打开，不再自动打开）
                 let total = r.breakdown.reduce(0) { $0 + $1.1 }
                 var lines: [String] = []
                 for (code, cnt) in r.breakdown {
@@ -502,10 +497,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 各语种占比：
                 \(breakStr)
-
-                （标注图已用「预览」打开，每块文字旁标了语种；专名=人名/地名，数字=纯数字，虚线灰框=未识别）
                 """
-                self.showDialog(title: "语种识别结果", msg: msg)
+                self.showResultDialog(title: "语种识别结果", msg: msg,
+                                      annotatedPath: r.annotatedPath)
             }
         }
     }
@@ -578,6 +572,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = msg
         alert.addButton(withTitle: "好的")
         alert.runModal()
+    }
+
+    // 识别结果弹窗：支持「查看详情」手动打开标注图，且任意键盘按键都可关闭（等同点「好的」）
+    func showResultDialog(title: String, msg: String, annotatedPath: String?) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = msg
+        alert.addButton(withTitle: "好的")   // .alertFirstButtonReturn
+        let hasImage = (annotatedPath != nil) && FileManager.default.fileExists(atPath: annotatedPath!)
+        if hasImage {
+            alert.addButton(withTitle: "查看详情")   // .alertSecondButtonReturn
+        }
+        // 任意键关闭：安装本地 keyDown 监听，收到任意按键即结束模态（等同「好的」）
+        var monitor: Any?
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { _ in
+            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+            return nil   // 吞掉按键，避免触发按钮默认行为
+        }
+        let resp = alert.runModal()
+        if let m = monitor { NSEvent.removeMonitor(m) }
+        if hasImage, resp == .alertSecondButtonReturn, let p = annotatedPath {
+            self.openInPreview(p)
+        }
     }
 }
 
