@@ -114,10 +114,99 @@ func latinTokens(_ text: String) -> [String] {
         .filter { !$0.isEmpty }
 }
 
-// 返回 (语种code, 是否可信)
-// 分类桶：具体语种 / name(专名) / num(数字) / und(未识别)
+// ============================================================
+// MARK: - 语言形态学线索（德语 / 英语），用于消解双语误判与词缀误判
+// ============================================================
+
+// 德语特有字符：命中即强烈提示德语
+let germanChars: Set<Character> = ["ä", "ö", "ü", "ß", "Ä", "Ö", "Ü"]
+
+// 德语高频功能词/冠词/介词/连词/代词（小写比较）——刻意只保留“区分度高”的词，
+// 避免选入 in/or/as 这类跨语言（意/葡/法）通用词造成误判。
+let germanStopwords: Set<String> = [
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
+    "und", "oder", "aber", "denn", "sondern", "doch",
+    "für", "mit", "von", "zum", "zur", "im", "am", "ins", "beim",
+    "auf", "aus", "bei", "nach", "über", "unter", "zwischen", "durch", "gegen", "ohne", "um", "vor", "hinter", "neben",
+    "ist", "sind", "war", "waren", "wird", "werden", "wurde", "wurden", "hat", "haben", "hatte",
+    "sein", "seine", "ihre", "nicht", "auch", "schon", "noch", "sehr", "mehr", "als", "wie", "wenn",
+    "weil", "dass", "damit", "sowie", "ich", "wir", "ihr", "kein", "keine", "keinen", "nur",
+    "mich", "dich", "sich", "diese", "dieser", "dieses"
+]
+
+// 英语高频功能词——同样只保留“区分度高”的词（去掉 a/an/in/on/at/or/as/so/if 等跨语言词）。
+let englishStopwords: Set<String> = [
+    "the", "and", "is", "are", "was", "were", "of", "to", "for", "with", "that", "this", "these", "those",
+    "from", "by", "it", "not", "which", "who", "whom", "whose", "been", "being", "have", "has", "had",
+    "will", "would", "should", "could", "you", "your", "they", "their", "our", "there", "when", "what",
+    "because", "about", "into", "than", "then", "only", "also", "more", "most", "such"
+]
+
+// 德语常见构词后缀 → 最小整词长度（避免误伤英文短词，如 young/sung/shaft/tennis）。
+// 覆盖用户明确要求的 -bau / -schaft / -ung / -keit 等。
+let germanSuffixMinLen: [(suf: String, minLen: Int)] = [
+    ("schaft", 7), ("ismus", 6), ("ität", 5), ("keit", 6), ("heit", 6),
+    ("ung", 6), ("nis", 7), ("tum", 5), ("bau", 5),
+    ("lich", 5), ("isch", 5), ("haft", 6), ("tät", 4)
+]
+
+// 判断单个 token 是否带明显德语形态（特殊字符 或 构词后缀）
+func tokenLooksGerman(_ token: String) -> Bool {
+    if token.contains(where: { germanChars.contains($0) }) { return true }
+    let lower = token.lowercased()
+    for (suf, minLen) in germanSuffixMinLen {
+        if lower.count >= minLen && lower.hasSuffix(suf) { return true }
+    }
+    return false
+}
+
+// 对拉丁文本按 token 打「德语 / 英语」得分：功能词命中 +2，德语形态命中 +1。
+// 用于在双语对照排版中，让每一行凭自身的功能词/词缀稳定归属，不依赖 NL 的模糊猜测。
+func latinLangScore(_ tokens: [String]) -> (de: Int, en: Int) {
+    var de = 0, en = 0
+    for tok in tokens {
+        let lower = tok.lowercased()
+        if germanStopwords.contains(lower) { de += 2 }
+        if englishStopwords.contains(lower) { en += 2 }
+        if tokenLooksGerman(tok) { de += 1 }
+    }
+    return (de, en)
+}
+
+// ============================================================
+// MARK: - 语种判定（稳定入口 + 实现）
+// ============================================================
+
+// ---- 稳定性缓存：同一段文字（归一化后）永远返回同一结果，消除 Apple NL 随机性 ----
+let detectCacheLock = NSLock()
+var detectCache: [String: (String, Bool)] = [:]
+
+// 归一化 key：小写 + 折叠所有空白为单空格 + 去首尾空白，
+// 让「同一段文字」即使 OCR 空格/换行略有差异，也命中同一缓存键，结果可复现。
+func normalizedKey(_ text: String) -> String {
+    return text.lowercased()
+        .split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" }
+        .joined(separator: " ")
+}
+
+// 返回 (语种code, 是否可信) —— 带缓存的稳定入口
 func detectBlockLang(_ text: String) -> (String, Bool) {
+    let key = normalizedKey(text)
+    detectCacheLock.lock()
+    if let cached = detectCache[key] { detectCacheLock.unlock(); return cached }
+    detectCacheLock.unlock()
+    let result = detectBlockLangImpl(text)
+    detectCacheLock.lock()
+    detectCache[key] = result
+    detectCacheLock.unlock()
+    return result
+}
+
+// 分类桶：具体语种 / name(专名) / num(数字) / und(未识别)
+func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 归一化后的 NL 输入：折叠空白，保留大小写；让轻微 OCR 空格差异不改变 NL 结果（稳定性）
+    let nlInput = t.split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" }.joined(separator: " ")
     var scriptCount: [String: Int] = [:]
     var hasKana = false
     var latinLetters = 0
@@ -151,17 +240,35 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
     }
     // ③ 拉丁字母为主：短文本（尤其是单词专名/缩写/编号）NaturalLanguage 极易误判
     //    （如 Rosengarten→荷兰语、SODDY→斯洛伐克语、Mo.→印尼语）。
-    //    因此先做专名判定：单 token 且像专名/缩写/编号时直接判专名，不交给 NL 乱猜。
     let letters = latinLetters
     let tokens = latinTokens(t)
-    if tokens.count <= 1 && isProperNounLike(t) {
-        return ("name", true)
+    let score = latinLangScore(tokens)
+
+    // ③-a 单 token：先判德语形态（词缀 -ung/-keit/-schaft/-bau… 或 ä ö ü ß），
+    //     避免「大写德语名词」（如 Ausbau、Gesellschaft、Freiheit）被 isProperNounLike
+    //     误判为「英语（人名/地名）」。—— 修复问题 2
+    if tokens.count <= 1 {
+        if let one = tokens.first, tokenLooksGerman(one) {
+            return ("de", true)
+        }
+        if isProperNounLike(t) {
+            return ("name", true)
+        }
     }
-    // ④ 多词/普通词：用 NaturalLanguage 判定，结果必须落在目标语种白名单内
+
+    // ③-b 规则强信号（稳定、可复现）：德/英功能词+形态计分，某一方明显占优（且领先≥2）
+    //     直接判定。用于消解「双语对照排版」中德英交替行被 NaturalLanguage 互判的问题。
+    //     —— 修复问题 1（同时也提升稳定性，修复问题 3）
+    if letters >= 3 {
+        if score.de >= 2 && score.de - score.en >= 2 { return ("de", true) }
+        if score.en >= 2 && score.en - score.de >= 2 { return ("en", true) }
+    }
+
+    // ④ 多词/普通词：用 NaturalLanguage 判定（输入已归一化，保证同文本同结果）
     if letters >= 3 {
         let r = NLLanguageRecognizer()
         r.languageConstraints = targetLangs
-        r.processString(t)
+        r.processString(nlInput)
         let hyp = r.languageHypotheses(withMaximum: 1)
         if let lang = r.dominantLanguage?.rawValue {
             let code = lang.hasPrefix("zh") ? "zh" : lang
@@ -169,6 +276,9 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
             // 文本越长越可信：长文本(≥12字母)放宽概率下限，短文本仍要求较高置信
             let need = letters >= 12 ? 0.50 : NL_PROB_MIN
             if allowedLangCodes.contains(code) && prob >= need {
+                // NL 结果与规则强信号冲突时，信任规则（更稳定，抗 NL 随机性）—— 修复问题 1/3
+                if code == "en" && score.de >= 2 && score.de - score.en >= 2 { return ("de", true) }
+                if code == "de" && score.en >= 2 && score.en - score.de >= 2 { return ("en", true) }
                 return (code, true)
             }
         }
@@ -182,7 +292,7 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
     // ⑦ 仍拿不准：取 NL 首选（限定目标白名单内），否则未识别
     let r2 = NLLanguageRecognizer()
     r2.languageConstraints = targetLangs
-    r2.processString(t)
+    r2.processString(nlInput)
     if let lang = r2.dominantLanguage?.rawValue {
         let code = lang.hasPrefix("zh") ? "zh" : lang
         if allowedLangCodes.contains(code) { return (code, true) }
