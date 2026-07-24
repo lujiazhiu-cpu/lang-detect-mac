@@ -332,6 +332,25 @@ func tokenLooksFrench(_ token: String) -> Bool {
     return false
 }
 
+// 法语强制词（星期/月份/活动词，命中即高权重判法语，不区分大小写）
+let frenchForceList: Set<String> = [
+    "journée","journee","vendredi","lundi","mardi","mercredi","jeudi","samedi","dimanche",
+    "janvier","février","fevrier","mars","avril","mai","juin","juillet","août","aout",
+    "septembre","octobre","novembre","décembre","decembre",
+    "théâtre","theatre","rencontres","ateliers","projections","réfugié","refugie",
+    "réfugiés","refugies","billetterie","entrée","entree","adresse","association",
+    "mondiale","concert","danse","repas","expo","expos"
+]
+func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
+// 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
+func hasFrenchElision(_ token: String) -> Bool {
+    let lower = token.lowercased()
+    for p in ["s'","l'","d'","n'","j'","c'","m'","qu'","s’","l’","d’","n’","j’","c’","m’","qu’"] {
+        if lower.hasPrefix(p) { return true }
+    }
+    return false
+}
+
 // 意大利语特征字符 / 高频词 / 词缀
 let italianChars: Set<Character> = ["à","è","é","ì","í","ò","ó","ù","ú",
                                     "À","È","É","Ì","Í","Ò","Ó","Ù","Ú"]
@@ -388,7 +407,9 @@ let vietnameseStopwords: Set<String> = [
     "dự","gọi","lại","chậm","là","các","một","người","ngày","năm","hội","nhạc","đêm",
     "triển","lãm","văn","hóa","nghệ","thuật","mỹ","nhiếp","ảnh","kiến","trúc","thiết","kế",
     "đồ","họa","minh","họa","cổ","phục","nhà","hàng","tạp","chí","bìa","sức","khỏe",
-    "tuyên","truyền","khoa","hướng","dẫn","giáo","dục","sự","kiện","lễ","áp","phích"
+    "tuyên","truyền","khoa","hướng","dẫn","giáo","dục","sự","kiện","lễ","áp","phích",
+    "mùa","xuân","công","viên","bách","hoa","bộ","hành","tháng","năm","ngày",
+    "thành","phố","nhà","ga","đường"
 ]
 func tokenLooksVietnamese(_ token: String) -> Bool {
     if hasVietnameseChar(token) { return true }
@@ -424,6 +445,37 @@ func tokenLooksPortuguese(_ token: String) -> Bool {
     if portugueseStopwords.contains(lower) { return true }
     if lower.count >= 5 {
         for suf in portugueseSuffixes where lower.hasSuffix(suf) { return true }
+    }
+    return false
+}
+
+// ============================================================
+// MARK: - 印尼语识别（强制词优先于德语/意大利语/英语）
+// ============================================================
+// 印尼语强制词：命中即高权重判印尼语（不区分大小写）。Dirgahayu 单列超高权重。
+let indonesianForceList: Set<String> = [
+    "dirgahayu","republik","indonesia","nusantara","merdeka","pancasila",
+    "kelana","tahta","perjuangan","cinta","bangsa","rakyat","negara",
+    "bioskop","sutradara","agustus","januari","februari","maret","april",
+    "mei","juni","juli","oktober","november","desember",
+    "dari","produser","cerita","kehidupan","bersama","untuk",
+    "baru","maju","jawa","bali","lombok","sultan","agung"
+]
+func isIndonesianForced(_ token: String) -> Bool { indonesianForceList.contains(token.lowercased()) }
+// 印尼语高频功能词
+let indonesianStopwords: Set<String> = [
+    "dan","yang","di","ke","dari","untuk","dengan","pada","ini","itu","atau","juga",
+    "sudah","bisa","ada","akan","tidak","adalah","dalam","oleh","para","sebagai"
+]
+// 印尼语典型词缀（含最小词长，避免误伤短英文词）
+let indonesianSuffixes: [String] = ["kan","ber","per","me","ke","nya","lah"]
+func tokenLooksIndonesian(_ token: String) -> Bool {
+    let lower = token.lowercased()
+    if indonesianForceList.contains(lower) { return true }
+    if indonesianStopwords.contains(lower) { return true }
+    if lower.count >= 6 {
+        for suf in indonesianSuffixes where lower.hasSuffix(suf) { return true }
+        if lower.hasPrefix("di") || lower.hasPrefix("ber") || lower.hasPrefix("per") || lower.hasPrefix("meng") || lower.hasPrefix("mem") { return true }
     }
     return false
 }
@@ -492,7 +544,7 @@ func spellHits(_ token: String) -> (de: Bool, en: Bool) {
 }
 
 // 多语种得分
-struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; var vi = 0; var pt = 0 }
+struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; var vi = 0; var pt = 0; var id = 0 }
 
 func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
@@ -513,6 +565,14 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         if tok.contains(where: { portugueseDistinctChars.contains($0) }) { s.pt += 3 }
         if isPortugueseForced(tok) { s.pt += 3 }
         else if tokenLooksPortuguese(tok) { s.pt += 2 }
+        // 印尼语：强制词极高权重（覆盖德/意/英），停用词/词缀普通
+        if lower == "dirgahayu" { s.id += 5 }
+        else if isIndonesianForced(tok) { s.id += 4 }
+        if indonesianStopwords.contains(lower) { s.id += 2 }
+        else if tokenLooksIndonesian(tok) { s.id += 2 }
+        // 法语强制词/缩略前缀
+        if isFrenchForced(tok) { s.fr += 4 }
+        if hasFrenchElision(tok) { s.fr += 3 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         let h = spellHits(tok)
         if h.de && !h.en { s.de += 2 }
@@ -524,7 +584,7 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
 
 // 返回得分最高的语种及其相对亚军的领先分
 func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
-    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it), ("vi", s.vi), ("pt", s.pt)].sorted { $0.1 > $1.1 }
+    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it), ("vi", s.vi), ("pt", s.pt), ("id", s.id)].sorted { $0.1 > $1.1 }
     return (arr[0].0, arr[0].1, arr[0].1 - arr[1].1)
 }
 
@@ -607,6 +667,9 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
         if let one = tokens.first {
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if tokenLooksVietnamese(one) { return ("vi", true) }
+            if isIndonesianForced(one) { return ("id", true) }
+            if isFrenchForced(one) { return ("fr", true) }
+            if hasFrenchElision(one) { return ("fr", true) }
             if isEnglishForced(one) { return ("en", true) }
             if isGermanForced(one) { return ("de", true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
@@ -617,6 +680,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if tokenLooksItalian(one) { return ("it", true) }
             if isPortugueseForced(one) { return ("pt", true) }
             if tokenLooksPortuguese(one) { return ("pt", true) }
+            if tokenLooksIndonesian(one) { return ("id", true) }
             // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
             let h = spellHits(one)
             if h.de && !h.en { return ("de", true) }
