@@ -30,14 +30,14 @@ import Carbon.HIToolbox   // 全局快捷键 RegisterEventHotKey
 let langCN: [String: String] = [
     "it": "意大利语", "pt": "葡萄牙语", "vi": "越南语", "id": "印尼语",
     "ja": "日语", "ko": "韩语", "th": "泰语", "ar": "阿拉伯语",
-    "de": "德语", "fr": "法语", "en": "英语",
+    "de": "德语", "fr": "法语", "en": "英语", "pl": "波兰语",
     "zh": "中文",
     "name": "英语（人名/地名）", "num": "数字", "und": "未识别"
 ]
 func cnName(_ code: String) -> String { langCN[code] ?? code }
 
 let langColor: [String: NSColor] = [
-    "de": .systemBlue, "en": .systemGreen, "fr": .systemPurple,
+    "de": .systemBlue, "en": .systemGreen, "fr": .systemPurple, "pl": .systemYellow,
     "it": .systemTeal, "pt": .systemOrange, "es": .systemBrown,
     "vi": .systemPink, "id": .systemIndigo, "ja": .systemRed,
     "ko": .magenta, "th": .brown, "ar": .darkGray,
@@ -49,7 +49,7 @@ func color(_ code: String) -> NSColor { langColor[code] ?? .gray }
 let targetLangs: [NLLanguage] = [
     .italian, .portuguese, .vietnamese, .indonesian,
     .japanese, .korean, .thai, .arabic,
-    .german, .french, .english,
+    .german, .french, .english, .polish,
     .simplifiedChinese, .traditionalChinese
 ]
 
@@ -57,7 +57,7 @@ let targetLangs: [NLLanguage] = [
 // （如荷兰语 nl / 斯洛伐克语 sk），凡不在此集合内的结果一律不采信，避免误判。
 let allowedLangCodes: Set<String> = [
     "it", "pt", "vi", "id", "ja", "ko", "th", "ar",
-    "de", "fr", "en", "zh"
+    "de", "fr", "en", "pl", "zh"
 ]
 
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
@@ -281,24 +281,128 @@ func spellCheckToken(_ token: String) -> SpellLangHit {
     return hit
 }
 
-// 对拉丁文本按 token 打「德语 / 英语」得分：功能词/德语特征命中 +2，英语功能词 +2，
-// NSSpellChecker 词典命中再 +2（德语优先）。用于在双语对照排版中让每行凭自身特征稳定归属。
-func latinLangScore(_ tokens: [String]) -> (de: Int, en: Int) {
-    var de = 0, en = 0
+// ============================================================
+// MARK: - 英语强制白名单 / 法语 / 波兰语 / 拼音 识别
+// ============================================================
+
+// 英语强制白名单：命中即判英语（最高优先），修复全大写英语词被误判德语。
+let englishForceList: Set<String> = [
+    "exposure","space","champion","blend","coffee","origin","natural","washed",
+    "anaerobic","organization","few","espresso","roast","arabica","robusta","aroma",
+    "flavor","flavour","notes","process","honey","single","medium","dark","light",
+    "brand","shop","store","sale","quality","premium","fresh","official","studio","design"
+]
+func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
+
+// 法语特征字符 / 高频词（含省音 l' d' 处理）
+let frenchChars: Set<Character> = ["é","è","ê","ë","î","ï","ô","œ","æ","à","â","ù","û","ç",
+                                   "É","È","Ê","Ë","Î","Ï","Ô","Œ","À","Â","Ù","Û","Ç"]
+let frenchStopwords: Set<String> = [
+    "le","la","les","un","une","des","du","de","au","aux","et","ou","sur","tout","tous",
+    "toute","pour","dans","avec","par","sans","chez","vers","ce","cette","qui","que",
+    "est","sont","collection","européenne","européen","juillet","artiste","érudit",
+    "géant","beaux","arts"
+]
+func stripElision(_ lower: String) -> String {
+    for p in ["l'","d'","j'","qu'","n'","s'","t'","c'","m'"] {
+        if lower.hasPrefix(p) { return String(lower.dropFirst(p.count)) }
+    }
+    return lower
+}
+func tokenLooksFrench(_ token: String) -> Bool {
+    if token.contains(where: { frenchChars.contains($0) }) { return true }
+    return frenchStopwords.contains(stripElision(token.lowercased()))
+}
+
+// 波兰语特征字符 / 高频词
+let polishChars: Set<Character> = ["ą","ę","ó","ś","ź","ż","ń","ł","ć",
+                                   "Ą","Ę","Ó","Ś","Ź","Ż","Ń","Ł","Ć"]
+let polishStopwords: Set<String> = [
+    "się","nowe","oraz","jest","dla","nie","tydzień","taniej","tylko","że","już",
+    "co","to","opłaca","okazje","zł","na","do","tak","albo","bardzo"
+]
+func tokenLooksPolish(_ token: String) -> Bool {
+    if token.contains(where: { polishChars.contains($0) }) { return true }
+    let lower = token.lowercased()
+    if lower == "zł" || lower.hasSuffix("zł") { return true }
+    return polishStopwords.contains(lower)
+}
+
+// 拼音音节判定：用于识别中文地名/人名拼音（YIWU/CHUIWAN/GEBI）
+let pinyinInitials = ["zh","ch","sh","b","p","m","f","d","t","n","l","g","k","h","j","q","x","r","z","c","s","y","w"]
+let pinyinFinals: Set<String> = [
+    "a","o","e","i","u","ai","ei","ao","ou","an","en","ang","eng","ong","er",
+    "ia","ie","iao","iu","ian","in","iang","ing","iong","ua","uo","uai","ui",
+    "uan","un","uang","ueng","ue"
+]
+func isPinyinSyllable(_ s: String) -> Bool {
+    if pinyinFinals.contains(s) { return true }
+    for ini in pinyinInitials where s.hasPrefix(ini) {
+        if pinyinFinals.contains(String(s.dropFirst(ini.count))) { return true }
+    }
+    return false
+}
+// 整词能被切分为若干合法拼音音节 → 视为拼音
+func looksPinyin(_ token: String) -> Bool {
+    let lower = token.lowercased()
+    guard lower.count >= 2, lower.allSatisfy({ $0.isASCII && $0.isLetter }) else { return false }
+    let chars = Array(lower)
+    var pos = 0
+    while pos < chars.count {
+        var matched = false
+        var len = min(6, chars.count - pos)
+        while len >= 1 {
+            if isPinyinSyllable(String(chars[pos..<pos+len])) { pos += len; matched = true; break }
+            len -= 1
+        }
+        if !matched { return false }
+    }
+    return true
+}
+
+// token 的德/英拼写词典命中情况（分别返回，供 deOnly / enOnly 判定）
+func spellHits(_ token: String) -> (de: Bool, en: Bool) {
+    if germanSpellLang == nil && englishSpellLang == nil { return (false, false) }
+    var deHit = false, enHit = false
+    // 候选：原词 + 全大写转 Title Case（WERK→Werk）
+    var cands = [token]
+    let hasLetter = token.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+    if hasLetter && token == token.uppercased() && token != token.lowercased() {
+        let low = token.lowercased(); cands.append(low.prefix(1).uppercased() + low.dropFirst())
+    }
+    for c in cands {
+        if !deHit && spellValid(c, language: germanSpellLang) { deHit = true }
+        if !enHit && spellValid(c, language: englishSpellLang) { enHit = true }
+    }
+    return (deHit, enHit)
+}
+
+// 多语种得分
+struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0 }
+
+func latinLangScore(_ tokens: [String]) -> LangScore {
+    var s = LangScore()
     for tok in tokens {
         let lower = tok.lowercased()
-        if germanStopwords.contains(lower) { de += 2 }
-        if englishStopwords.contains(lower) { en += 2 }
-        // 德语词根/词缀/特殊字符，或德语人名 → 强信号 +2（让单个德语词也能触发判定）
-        if tokenLooksGerman(tok) || isGermanGivenName(tok) { de += 2 }
-        // NSSpellChecker 词典辅助加权：德语命中→德语；仅英语命中→英语；都未命中→交回规则
-        switch spellCheckToken(tok) {
-        case .german:  de += 2
-        case .english: en += 2
-        case .none:    break
-        }
+        if isEnglishForced(tok) { s.en += 3 }
+        if germanStopwords.contains(lower) { s.de += 2 }
+        if englishStopwords.contains(lower) { s.en += 2 }
+        if tokenLooksGerman(tok) || isGermanGivenName(tok) { s.de += 2 }
+        if tokenLooksFrench(tok) { s.fr += 2 }
+        if tokenLooksPolish(tok) { s.pl += 2 }
+        // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
+        let h = spellHits(tok)
+        if h.de && !h.en { s.de += 2 }
+        else if h.en && !h.de { s.en += 2 }
+        else if h.de && h.en { s.en += 1 }
     }
-    return (de, en)
+    return s
+}
+
+// 返回得分最高的语种及其相对亚军的领先分
+func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
+    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl)].sorted { $0.1 > $1.1 }
+    return (arr[0].0, arr[0].1, arr[0].1 - arr[1].1)
 }
 
 // ============================================================
@@ -378,23 +482,22 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     //     isProperNounLike 误判为「英语（人名/地名）」。—— 修复问题 1/2/3
     if tokens.count <= 1 {
         if let one = tokens.first {
-            // 1) 词根/词缀/特殊字符/德语人名 → 德语
-            if tokenLooksGerman(one) || isGermanGivenName(one) {
-                return ("de", true)
-            }
-            // 2) NSSpellChecker 词典辅助：德语词典命中（含 WERK→Werk 转写）→ 德语，优先于专名
-            let hit = spellCheckToken(one)
-            if hit == .german {
-                return ("de", true)
-            }
-            // 3) 像专名/缩写/编号（且德语词典未命中）→ 专名
-            if isProperNounLike(t) {
-                return ("name", true)
-            }
-            // 4) 仅英语词典命中且不像专名（如小写普通英文词）→ 英语
-            if hit == .english {
-                return ("en", true)
-            }
+            // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
+            if isEnglishForced(one) { return ("en", true) }
+            // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
+            if tokenLooksGerman(one) || isGermanGivenName(one) { return ("de", true) }
+            // 3) 法语 / 波兰语特征 → 对应语种
+            if tokenLooksFrench(one) { return ("fr", true) }
+            if tokenLooksPolish(one) { return ("pl", true) }
+            // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
+            let h = spellHits(one)
+            if h.de && !h.en { return ("de", true) }
+            if h.en && !h.de { return ("en", true) }
+            if h.de && h.en { return isProperNounLike(t) ? ("name", true) : ("en", true) }
+            // 5) 两词典都未命中：拼音（中文地名/人名）→ 未识别，绝不判德语/专名
+            if looksPinyin(one) { return ("und", false) }
+            // 6) 像专名/缩写/编号 → 专名
+            if isProperNounLike(t) { return ("name", true) }
         }
     }
 
@@ -402,8 +505,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     //     直接判定。用于消解「双语对照排版」德英交替行互判，及德语人名/复合词被判英语的问题。
     //     —— 修复问题 1/2（Else Stadler-Jacobs 等德语人名走此路径）
     if letters >= 3 {
-        if score.de >= 2 && score.de - score.en >= 2 { return ("de", true) }
-        if score.en >= 2 && score.en - score.de >= 2 { return ("en", true) }
+        let best = bestLatinLang(score)
+        if best.score >= 2 && best.margin >= 2 { return (best.code, true) }
     }
 
     // ④ 多词/普通词：用 NaturalLanguage 判定（输入已归一化，保证同文本同结果）
@@ -418,9 +521,15 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             // 文本越长越可信：长文本(≥12字母)放宽概率下限，短文本仍要求较高置信
             let need = letters >= 12 ? 0.50 : NL_PROB_MIN
             if allowedLangCodes.contains(code) && prob >= need {
-                // NL 结果与规则强信号冲突时，信任规则（更稳定，抗 NL 随机性）—— 修复问题 1/3
-                if code == "en" && score.de >= 2 && score.de - score.en >= 2 { return ("de", true) }
-                if code == "de" && score.en >= 2 && score.en - score.de >= 2 { return ("en", true) }
+                // 规则强信号覆盖 NL：修复 NL 把 法语/波兰语/英语 误判为德语
+                let best = bestLatinLang(score)
+                if best.score >= 2 && best.margin >= 2 && best.code != code {
+                    return (best.code, true)
+                }
+                // NL 判德语但无任何真实德语特征，且英/法/波有信号 → 不默认德语（问题4）
+                if code == "de" && !hasGermanFeature(tokens) && best.score >= 2 && best.code != "de" {
+                    return (best.code, true)
+                }
                 return (code, true)
             }
         }
@@ -502,7 +611,7 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
         req.revision = VNRecognizeTextRequestRevision3
         req.automaticallyDetectsLanguage = true
     } else {
-        req.recognitionLanguages = ["en-US","fr-FR","de-DE","it-IT","pt-BR","vi-VN","id-ID","ja-JP","ko-KR","th-TH","ar-SA","zh-Hans","zh-Hant"]
+        req.recognitionLanguages = ["en-US","fr-FR","de-DE","pl-PL","it-IT","pt-BR","vi-VN","id-ID","ja-JP","ko-KR","th-TH","ar-SA","zh-Hans","zh-Hant"]
     }
     let handler = VNImageRequestHandler(cgImage: cg, options: [:])
     try? handler.perform([req])
@@ -635,6 +744,7 @@ struct DetectResult {
     let annotatedPath: String
     let singleDominant: Bool
     let dominantLang: String
+    let mostlyChinese: Bool
 }
 
 func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
@@ -662,12 +772,22 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         dominantLang = top.key
         if Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
     }
+    // 问题5：非中文真实语言 token 极少（<3）且截图含中文/拼音 → 判「未识别（主要为中文）」，不触发整体德语
+    let realBlockCount = blocks.filter { $0.lang != "und" && $0.lang != "name" && $0.lang != "num" && $0.lang != "zh" }.count
+    let hasHan = blocks.contains { $0.text.unicodeScalars.contains { ($0.value >= 0x4E00 && $0.value <= 0x9FFF) } }
+    let hasPinyinUnd = blocks.contains { $0.lang == "und" && looksPinyin($0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    var mostlyChinese = false
+    if realBlockCount < 3 && (hasHan || hasPinyinUnd) {
+        mostlyChinese = true
+        singleDominant = false
+    }
     annotate(cg, blocks: blocks, breakdown: sorted, mixed: mixed,
              singleDominant: singleDominant, dominantLang: dominantLang, outPath: annoPath)
     let textLen = blocks.map { $0.text }.joined().trimmingCharacters(in: .whitespacesAndNewlines).count
     return DetectResult(mainLang: mainLang, mixed: mixed, breakdown: sorted,
                         blockCount: blocks.count, textLen: textLen, annotatedPath: annoPath,
-                        singleDominant: singleDominant, dominantLang: dominantLang)
+                        singleDominant: singleDominant, dominantLang: dominantLang,
+                        mostlyChinese: mostlyChinese)
 }
 
 // ============================================================
@@ -822,7 +942,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 // 汇总弹窗（双按钮）：显示在截图所在屏幕
                 let total = r.breakdown.reduce(0) { $0 + $1.1 }
                 let msg: String
-                if r.singleDominant {
+                if r.mostlyChinese {
+                    msg = """
+                    整体：未识别（主要为中文）
+
+                    （非中文文字过少，且多为拼音，不做语种判定）
+                    """
+                } else if r.singleDominant {
                     // 单语简洁模式：整体一种语言 ≥80%，直接给结论，不列分行占比
                     msg = """
                     整体：\(cnName(r.dominantLang))
