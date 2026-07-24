@@ -319,7 +319,21 @@ let germanForceList: Set<String> = [
     "roman",
     // 德语城市/街道地址词（命中即判德语）
     "berlin","hamburg","münchen","muenchen","köln","koeln","frankfurt","stuttgart",
-    "düsseldorf","duesseldorf","leipzig","straße","strasse","str"
+    "düsseldorf","duesseldorf","leipzig","straße","strasse","str",
+    // 德语语言名称（全大写形态常见）
+    "deutsch","englisch","französisch","franzosisch","italienisch","spanisch",
+    "japanisch","koreanisch","russisch","polnisch","arabisch","türkisch","turkisch",
+    "chinesisch","griechisch","lateinisch","schwedisch","niederländisch","niederlandisch",
+    "dänisch","danisch","norwegisch","finnisch","ungarisch","tschechisch","slowakisch",
+    // 德语杂志/出版特有词
+    "perfekt","deutschperfekt","leserbriefe","abitur","grammatik","schreiben","lesen",
+    "sprechen","hörverstehen","horverstehen","vokabeln","übungen","ubungen",
+    // ADESSO是意大利文（在意大利词里加），ÖSTERREICH等
+    "österreich","osterreich","schweiz","österreichisch","osterreichisch",
+    // 学习类词
+    "lernen","lernhilfe","lernkarte",
+    // 出版社/机构
+    "zeitschrift","magazin","ausgabe","heft","seite"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -406,6 +420,21 @@ func tokenLooksItalian(_ token: String) -> Bool {
     }
     return false
 }
+
+// 意大利语强制词：命中即高权重判意大利语（不区分大小写），修复意大利语词被误判英语人名/其他语种。
+let italianForceList: Set<String> = [
+    "adesso","presto","subito","ancora","sempre","bello","bella","buono","buona",
+    "tutto","tutta","tutti","tutte","cosa","cose","molto","bene","male",
+    "siracusa","palermo","sicilia","siciliano","siciliana",
+    "amore","caro","cara","amico","amica","cuore","vita","mondo",
+    "piazza","palazzo","chiesa","duomo","museo","teatro",
+    "cultura","sport","feste","settimana","giorno","anno",
+    "mio","mia","tuo","tua","suo","sua","noi","voi","loro",
+    "nel","nella","nelle","negli","nello","alle","agli","alla","al","del","della","delle","degli","dello",
+    "una","uno","non","per","con","che","chi","come","dove","quando","perché","perche",
+    "giornale","rivista","mensile","settimanale"
+]
+func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
 
 // ============================================================
 // MARK: - 越南语识别（独有字符权重最高）
@@ -506,7 +535,12 @@ func tokenLooksIndonesian(_ token: String) -> Bool {
     if indonesianStopwords.contains(lower) { return true }
     if lower.count >= 6 {
         for suf in indonesianSuffixes where lower.hasSuffix(suf) { return true }
-        if lower.hasPrefix("di") || lower.hasPrefix("ber") || lower.hasPrefix("per") || lower.hasPrefix("meng") || lower.hasPrefix("mem") { return true }
+        if lower.hasPrefix("ber") || lower.hasPrefix("per") || lower.hasPrefix("meng") || lower.hasPrefix("mem") { return true }
+    }
+    // di 前缀：加强校验，避免误伤英语/德语词（如 direction/dialog/dinner）
+    if lower.count >= 7 && lower.hasPrefix("di") {
+        let h = spellHits(token)
+        if !h.en && !h.de { return true }
     }
     return false
 }
@@ -585,6 +619,8 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
     // ---- Pass 1: 逐 token 打分（保留全部既有信号）----
     for tok in tokens {
         let lower = tok.lowercased()
+        // 拼写词典命中情况（提前算，供意/印尼语词缀保护使用）
+        let h = spellHits(tok)
         // 英语强制
         if isEnglishForced(tok) { s.en += 3 }
         // 德语（强制词/停用词/词根词缀+人名/拼写词典）
@@ -596,29 +632,34 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         if isFrenchForced(tok) { s.fr += 4 }
         if hasFrenchElision(tok) { s.fr += 3 }
         if tokenLooksFrench(tok) { s.fr += 2 }
-        // 意大利语
-        if tokenLooksItalian(tok) { s.it += 2 }
+        // 意大利语：强制词高权重（不受英语拼写命中屏蔽）；词缀/词根匹配仅在英语词典未命中时计权，
+        // 避免 BOTSWANA/ESSENTIAL 等英语词被误伤为意大利语。
+        if isItalianForced(tok) { s.it += 4 }
+        else if !h.en && tokenLooksItalian(tok) { s.it += 2 }
         // 波兰语
         if tokenLooksPolish(tok) { s.pl += 2 }
         // 葡萄牙语
         if tok.contains(where: { portugueseDistinctChars.contains($0) }) { s.pt += 3 }
         if isPortugueseForced(tok) { s.pt += 3 }
         else if tokenLooksPortuguese(tok) { s.pt += 2 }
-        // 印尼语
+        // 印尼语：强制词高权重（不受英语拼写命中屏蔽）；停用词/词缀匹配仅在英语词典未命中时计权，
+        // 避免英语词被误伤为印尼语。
         if lower == "dirgahayu" { s.id += 5 } else if isIndonesianForced(tok) { s.id += 4 }
-        if indonesianStopwords.contains(lower) { s.id += 2 } else if tokenLooksIndonesian(tok) { s.id += 2 }
+        if indonesianStopwords.contains(lower) { s.id += 2 } else if !h.en && tokenLooksIndonesian(tok) { s.id += 2 }
         // 越南语：独有字符 +8；停用词 +3
         if hasVietnameseChar(tok) { s.vi += 8 }
         else if vietnameseStopwords.contains(lower) { s.vi += 3 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
-        let h = spellHits(tok)
         if h.de && !h.en { s.de += 2 }
         else if h.en && !h.de { s.en += 2 }
         else if h.de && h.en { s.en += 1 }
         // ---- 上下文加权 ----
-        // 越南语无变音符高频词：仅当块内已有越南语特征字符
-        if ctxHasVietChar && vietnameseWeakWords.contains(lower) { s.vi += 2 }
-        if ctxHasVietChar && !hasVietnameseChar(tok) { s.vi += 2 } // 块内其他 token 也获越南语上下文加成
+        // 越南语上下文加权只作用于非英语词：英语停用词/强制词不受越南语上下文污染
+        if !englishStopwords.contains(lower) && !isEnglishForced(tok) {
+            // 越南语无变音符高频词：仅当块内已有越南语特征字符
+            if ctxHasVietChar && vietnameseWeakWords.contains(lower) { s.vi += 2 }
+            if ctxHasVietChar && !hasVietnameseChar(tok) { s.vi += 2 } // 块内其他 token 也获越南语上下文加成
+        }
         // 法语上下文：块内已有明确法语词时，含共用重音字符的 token 偏法语
         if ctxHasFrench && tok.contains(where: { sharedRomanceAccents.contains($0) }) { s.fr += 2 }
     }
@@ -718,6 +759,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if hasFrenchElision(one) { return ("fr", true) }
             if isEnglishForced(one) { return ("en", true) }
             if isGermanForced(one) { return ("de", true) }
+            // 意大利语强制词优先于英语人名（如 ADESSO/SICILIA）
+            if isItalianForced(one) { return ("it", true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
             if tokenLooksGerman(one) || isGermanGivenName(one) { return ("de", true) }
             // 3) 法语 / 波兰语特征 → 对应语种
@@ -1152,6 +1195,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try? FileManager.default.removeItem(atPath: shotPath)
         try? FileManager.default.removeItem(atPath: annoPath)
 
+        // 在截图进程启动前先记录屏幕，避免截图拖动结束后鼠标移到另一块屏幕
+        self.captureScreen = self.targetScreen()
+
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         task.arguments = ["-x", "-i", shotPath]   // -x 静音；-i 交互框选（系统原生，无自绘覆盖层）
@@ -1159,10 +1205,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         catch { showDialog(title: "语种识别", msg: "无法启动截图：\(error.localizedDescription)"); return }
 
         guard FileManager.default.fileExists(atPath: shotPath) else { return }  // 用户取消
-
-        // 记录截图所在屏幕：截图刚结束时鼠标停留处即用户框选结束的屏幕
-        // （screencapture -i 不回传框选矩形，故用鼠标位置判定，fallback 到主屏）
-        self.captureScreen = self.targetScreen()
 
         // 异步做 OCR，避免卡 UI
         DispatchQueue.global(qos: .userInitiated).async {
