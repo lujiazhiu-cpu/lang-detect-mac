@@ -323,7 +323,9 @@ let englishForceList: Set<String> = [
     "love","joy","pure","back","big","splash","summer","vibe","party","easy",
     "cool","wild","soft","style",
     // 简单英语词（修复被误判印尼语/波兰语/法语）
-    "enjoy","tasty","pieces","journal","splice","using","analog","analogue"
+    "enjoy","tasty","pieces","journal","splice","using","analog","analogue",
+    // 英语音乐/出版词汇（修复被误判印尼语/意大利语/德语）
+    "violin","thing","arts","music","makers","maker","advertorials","advertorial"
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
@@ -358,7 +360,11 @@ let germanForceList: Set<String> = [
     // 德语专有月份（英德共用的 April/August/September/November 归英语，此处仅收德语独有拼写）
     "januar","februar","märz","maerz","mai","juni","juli","oktober","dezember",
     // 德语冠词/限定词（修复全大写冠词被误判为其他语种或人名/地名）
-    "die","das","der","den","dem","des","ein","eine","einen","einem","einer","eines"
+    "die","das","der","den","dem","des","ein","eine","einen","einem","einer","eines",
+    // 德语音乐/出版词汇（命中即判德语，修复被判英语/意大利语）
+    "operetten","musicals","spielliteratur","musikpädagogik","musikpadagogik",
+    "musikbuch","neuerscheinungen","frühjahr","fruehjahr","herbst",
+    "printausgaben","sonderwerbeformen","noten","notenausgabe","klavier","gesang"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -405,7 +411,11 @@ let frenchForceList: Set<String> = [
     "pratique","plein","air","caravanes","passe-partout","partir","famille",
     "balades","balade","stationnement","nouvelles","nouvelle","déjà","deja",
     "surprises","surprise","découverte","decouverte","autour","gratuit","gratuite",
-    "spectacle","spectacles","exposition","expositions","atelier","ateliers"
+    "spectacle","spectacles","exposition","expositions","atelier","ateliers",
+    // 法国城市名（命中即判法语，修复被判「英语人名/地名」）
+    "bayonne","roubaix","bordeaux","toulouse","marseille","nantes","strasbourg",
+    "grenoble","montpellier","rennes","brest","reims","dijon","lyon","nice",
+    "lille","nancy","angers","tours","orléans","orleans"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -466,7 +476,15 @@ let italianForceList: Set<String> = [
     // 歌剧名/作曲家/专有词（命中即判意大利语，修复被判英语人名/地名或法语）
     "turandot","orfeo","vespri","siciliani","biennale","venezia",
     "giacomo","puccini","giuseppe","verdi","monteverdi","claudio",
-    "rossini","donizetti","bellini","vivaldi","boccherini"
+    "rossini","donizetti","bellini","vivaldi","boccherini",
+    // 意大利语高频短词/代词/动词（修复被误判英语或「英语人名/地名」）
+    "lei","lui","lo","la","le","li","gli","cosa","nessuno","nessuna",
+    "eppure","eccola","stesso","stessa","sente","sembra","prenderò","prendero",
+    "conferma","profumo","pulito","persona","donna","uomo","cervello","valigia",
+    "torino","pelleteria","opinione","richiesta","invadere","inarrestabile",
+    "perché","perche","voglio","vorrei","chiesto","concesso","arriva","sicuro",
+    "convenzionale","superficiale","sentirsi","essere","tornare","servire",
+    "prendere","biglietto","aereo","giorni","mese","cuoio","così","cosi","il"
 ]
 func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
 // 意大利语 L' 省音前缀（如 L'ORFEO / L'Elisir）：命中即视为意大利语特征，优先于法语省音
@@ -752,9 +770,13 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         if hasVietnameseChar(tok) { s.vi += 8 }
         else if vietnameseStopwords.contains(lower) { s.vi += 3 }
         // 西班牙语：ñ/¿/¡ 独有字符 +6；强制词 +4；停用词/词缀 +2
-        if tok.contains(where: { spanishDistinctChars.contains($0) }) { s.es += 6 }
-        if isSpanishForced(tok) { s.es += 4 }
-        else if !h.en && !h.de && (spanishStopwords.contains(lower) || tokenLooksSpanish(tok)) { s.es += 2 }
+        // 防御：仅对"含字母"的 token 计西语分，避免纯数字/年份(如 2026)被误判西语
+        let tokHasLetter = tok.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+        if tokHasLetter {
+            if tok.contains(where: { spanishDistinctChars.contains($0) }) { s.es += 6 }
+            if isSpanishForced(tok) { s.es += 4 }
+            else if !h.en && !h.de && (spanishStopwords.contains(lower) || tokenLooksSpanish(tok)) { s.es += 2 }
+        }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         if h.de && !h.en { s.de += 2 }
         else if h.en && !h.de { s.en += 2 }
