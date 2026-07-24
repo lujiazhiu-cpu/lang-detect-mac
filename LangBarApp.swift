@@ -114,6 +114,21 @@ func latinTokens(_ text: String) -> [String] {
         .filter { !$0.isEmpty }
 }
 
+// 纯数字/日期/时间/价格/尺寸 token：去掉数字、标点和单位后为空 → 视为数字 token，完全跳过。
+// 注意：Uhr/cm/px/h 只有在与数字同现时才作为单位剥离；单独的 "Uhr" 不是数字 token（保留为德语词）。
+func isNumericToken(_ token: String) -> Bool {
+    let lower = token.lowercased()
+    // 必须含至少一个数字，才可能是数字 token（避免把纯 "uhr"/"cm" 当数字）
+    guard lower.contains(where: { $0.isNumber }) else { return false }
+    var s = lower
+    for unit in ["uhr", "cm", "mm", "px", "kg", "km"] { s = s.replacingOccurrences(of: unit, with: "") }
+    // 剥离数字与常见分隔/货币/单位符号
+    let strip: Set<Character> = ["0","1","2","3","4","5","6","7","8","9",
+                                 ".", ",", "-", ":", "/", "%", "€", "$", "£", "×", "x", "h", " ", "'", "’"]
+    s.removeAll { strip.contains($0) }
+    return s.isEmpty
+}
+
 // ============================================================
 // MARK: - 语言形态学线索（德语 / 英语），用于消解双语误判与词缀误判
 // ============================================================
@@ -131,7 +146,7 @@ let germanStopwords: Set<String> = [
     "ist", "sind", "war", "waren", "wird", "werden", "wurde", "wurden", "hat", "haben", "hatte",
     "sein", "seine", "ihre", "nicht", "auch", "schon", "noch", "sehr", "mehr", "als", "wie", "wenn",
     "weil", "dass", "damit", "sowie", "ich", "wir", "ihr", "kein", "keine", "keinen", "nur",
-    "mich", "dich", "sich", "diese", "dieser", "dieses"
+    "mich", "dich", "sich", "diese", "dieser", "dieses", "roman"
 ]
 
 // 英语高频功能词——同样只保留“区分度高”的词（去掉 a/an/in/on/at/or/as/so/if 等跨语言词）。
@@ -291,14 +306,20 @@ let englishForceList: Set<String> = [
     "exposure","space","champion","blend","coffee","origin","natural","washed",
     "anaerobic","organization","few","espresso","roast","arabica","robusta","aroma",
     "flavor","flavour","notes","process","honey","single","medium","dark","light",
-    "brand","shop","store","sale","quality","premium","fresh","official","studio","design"
+    "brand","shop","store","sale","quality","premium","fresh","official","studio","design",
+    "pride"
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
 // 德语强制白名单：命中即判德语（不区分大小写），修复全大写德语词被误判英语。
 let germanForceList: Set<String> = [
     "blauer","reiter","kosmos","fotografie","fotografien","herausgeber",
-    "verlag","kunst","werk","statt","bau","kunstverlag","blaue","blau"
+    "verlag","kunst","werk","statt","bau","kunstverlag","blaue","blau",
+    // 德语小说/名词
+    "roman",
+    // 德语城市/街道地址词（命中即判德语）
+    "berlin","hamburg","münchen","muenchen","köln","koeln","frankfurt","stuttgart",
+    "düsseldorf","duesseldorf","leipzig","straße","strasse","str"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -339,7 +360,8 @@ let frenchForceList: Set<String> = [
     "septembre","octobre","novembre","décembre","decembre",
     "théâtre","theatre","rencontres","ateliers","projections","réfugié","refugie",
     "réfugiés","refugies","billetterie","entrée","entree","adresse","association",
-    "mondiale","concert","danse","repas","expo","expos"
+    "mondiale","concert","danse","repas","expo","expos",
+    "méliès","melies"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -415,6 +437,15 @@ func tokenLooksVietnamese(_ token: String) -> Bool {
     if hasVietnameseChar(token) { return true }
     return vietnameseStopwords.contains(token.lowercased())
 }
+
+// 越南语无变音符高频词：单独出现不强判，仅在块内已有越南语特征字符时 +2（上下文加权）
+let vietnameseWeakWords: Set<String> = [
+    "trong","trang","sang","hang","bang","ban","lan","can","van","tan","con","cho",
+    "chi","nha","bac","nam","son","long","pho","dong","tien","thai","dinh","ha"
+]
+// 法语/葡语/意语共用重音字符（用于法语上下文加权判定）
+let sharedRomanceAccents: Set<Character> = ["è","é","ê","â","ô","î","û","ç","œ","à",
+                                            "È","É","Ê","Â","Ô","Î","Û","Ç","Œ","À"]
 
 // ============================================================
 // MARK: - 葡萄牙语识别
@@ -548,36 +579,48 @@ struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; v
 
 func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
+    // ---- Pass 0: 上下文标志 ----
+    let ctxHasVietChar = tokens.contains { hasVietnameseChar($0) }
+    let ctxHasFrench = tokens.contains { isFrenchForced($0) || hasFrenchElision($0) || frenchStopwords.contains($0.lowercased()) }
+    // ---- Pass 1: 逐 token 打分（保留全部既有信号）----
     for tok in tokens {
         let lower = tok.lowercased()
-        if isGermanForced(tok) { s.de += 3 }
+        // 英语强制
         if isEnglishForced(tok) { s.en += 3 }
+        // 德语（强制词/停用词/词根词缀+人名/拼写词典）
+        if isGermanForced(tok) { s.de += 3 }
         if germanStopwords.contains(lower) { s.de += 3 }
         if englishStopwords.contains(lower) { s.en += 2 }
         if tokenLooksGerman(tok) || isGermanGivenName(tok) { s.de += 2 }
+        // 法语（强制词/缩略前缀/停用词/特征）
+        if isFrenchForced(tok) { s.fr += 4 }
+        if hasFrenchElision(tok) { s.fr += 3 }
         if tokenLooksFrench(tok) { s.fr += 2 }
+        // 意大利语
         if tokenLooksItalian(tok) { s.it += 2 }
+        // 波兰语
         if tokenLooksPolish(tok) { s.pl += 2 }
-        // 越南语独有字符 → 极高权重；停用词 → 高权重
-        if hasVietnameseChar(tok) { s.vi += 5 }
-        else if vietnameseStopwords.contains(lower) { s.vi += 3 }
-        // 葡语：鼻化字符/强制词 → 高权重；停用词/后缀 → 普通
+        // 葡萄牙语
         if tok.contains(where: { portugueseDistinctChars.contains($0) }) { s.pt += 3 }
         if isPortugueseForced(tok) { s.pt += 3 }
         else if tokenLooksPortuguese(tok) { s.pt += 2 }
-        // 印尼语：强制词极高权重（覆盖德/意/英），停用词/词缀普通
-        if lower == "dirgahayu" { s.id += 5 }
-        else if isIndonesianForced(tok) { s.id += 4 }
-        if indonesianStopwords.contains(lower) { s.id += 2 }
-        else if tokenLooksIndonesian(tok) { s.id += 2 }
-        // 法语强制词/缩略前缀
-        if isFrenchForced(tok) { s.fr += 4 }
-        if hasFrenchElision(tok) { s.fr += 3 }
+        // 印尼语
+        if lower == "dirgahayu" { s.id += 5 } else if isIndonesianForced(tok) { s.id += 4 }
+        if indonesianStopwords.contains(lower) { s.id += 2 } else if tokenLooksIndonesian(tok) { s.id += 2 }
+        // 越南语：独有字符 +8；停用词 +3
+        if hasVietnameseChar(tok) { s.vi += 8 }
+        else if vietnameseStopwords.contains(lower) { s.vi += 3 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         let h = spellHits(tok)
         if h.de && !h.en { s.de += 2 }
         else if h.en && !h.de { s.en += 2 }
         else if h.de && h.en { s.en += 1 }
+        // ---- 上下文加权 ----
+        // 越南语无变音符高频词：仅当块内已有越南语特征字符
+        if ctxHasVietChar && vietnameseWeakWords.contains(lower) { s.vi += 2 }
+        if ctxHasVietChar && !hasVietnameseChar(tok) { s.vi += 2 } // 块内其他 token 也获越南语上下文加成
+        // 法语上下文：块内已有明确法语词时，含共用重音字符的 token 偏法语
+        if ctxHasFrench && tok.contains(where: { sharedRomanceAccents.contains($0) }) { s.fr += 2 }
     }
     return s
 }
@@ -657,14 +700,17 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     //    （如 Rosengarten→荷兰语、SODDY→斯洛伐克语、Mo.→印尼语）。
     let letters = latinLetters
     let tokens = latinTokens(t)
-    let score = latinLangScore(tokens)
+    let tokensNZ = tokens.filter { !isNumericToken($0) }
+    // 整块都是数字/日期/时间/价格 → 跳过，不识别不标注（与中文跳过一致，返回 "zh" 令 ocrBlocks 直接 continue）
+    if !tokens.isEmpty && tokensNZ.isEmpty { return ("zh", true) }
+    let score = latinLangScore(tokensNZ)
 
     // ③-a 单 token：先判德语形态（词根 werk/statt/verlag/kunst/bast/tier…、
     //     构词后缀 -ung/-keit/-schaft/-bau…、特殊字符 ä ö ü ß，或德语人名 Else/Otto…），
     //     避免「大写德语词/复合词/德语人名」（如 WERK、STATT、BASTO、Kunstverlag）被
     //     isProperNounLike 误判为「英语（人名/地名）」。—— 修复问题 1/2/3
-    if tokens.count <= 1 {
-        if let one = tokens.first {
+    if tokensNZ.count <= 1 {
+        if let one = tokensNZ.first {
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if tokenLooksVietnamese(one) { return ("vi", true) }
             if isIndonesianForced(one) { return ("id", true) }
@@ -719,7 +765,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
                     return (best.code, true)
                 }
                 // NL 判德语但无任何真实德语特征，且英/法/波有信号 → 不默认德语（问题4）
-                if code == "de" && !hasGermanFeature(tokens) && best.score >= 2 && best.code != "de" {
+                if code == "de" && !hasGermanFeature(tokensNZ) && best.score >= 2 && best.code != "de" {
                     return (best.code, true)
                 }
                 return (code, true)
@@ -730,7 +776,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     //    但收窄专名路径：只要含任何德语特征（词根/词缀/特殊字符/德语人名）且无明显英语信号，
     //    一律判德语，不再走「英语（人名/地名）」。—— 修复问题 1/2
     if isProperNounLike(t) {
-        if hasGermanFeature(tokens) && score.en < 2 {
+        if hasGermanFeature(tokensNZ) && score.en < 2 {
             return ("de", true)
         }
         return ("name", true)
