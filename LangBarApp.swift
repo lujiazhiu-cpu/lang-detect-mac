@@ -316,7 +316,14 @@ let englishForceList: Set<String> = [
     "news","culture","interview","review","guide","special","edition","magazine",
     // 英语月份（英德共用月份强制判英语，修复被判印尼/波兰/泰语）
     "january","february","march","april","may","june","july","august",
-    "september","october","november","december"
+    "september","october","november","december",
+    // 英语杂志/时尚品牌名（ELLE 法语也有，但作杂志品牌标英语）
+    "esquire","harper","bazaar","instyle","elle","vogue","wear","sleek","tweed",
+    // 英语常用短词（防止全大写被误判为「人名/地名」）
+    "love","joy","pure","back","big","splash","summer","vibe","party","easy",
+    "cool","wild","soft","style",
+    // 简单英语词（修复被误判印尼语/波兰语/法语）
+    "enjoy","tasty","pieces","journal","splice","using","analog","analogue"
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
@@ -349,7 +356,9 @@ let germanForceList: Set<String> = [
     "winterparadies","programm","größte","groesste","größer","groesser",
     "freiheit","gesundheit","sicherheit","zukunft","erfolg","angebot","angebote",
     // 德语专有月份（英德共用的 April/August/September/November 归英语，此处仅收德语独有拼写）
-    "januar","februar","märz","maerz","mai","juni","juli","oktober","dezember"
+    "januar","februar","märz","maerz","mai","juni","juli","oktober","dezember",
+    // 德语冠词/限定词（修复全大写冠词被误判为其他语种或人名/地名）
+    "die","das","der","den","dem","des","ein","eine","einen","einem","einer","eines"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -453,9 +462,25 @@ let italianForceList: Set<String> = [
     "mio","mia","tuo","tua","suo","sua","noi","voi","loro",
     "nel","nella","nelle","negli","nello","alle","agli","alla","al","del","della","delle","degli","dello",
     "una","uno","non","per","con","che","chi","come","dove","quando","perché","perche",
-    "giornale","rivista","mensile","settimanale"
+    "giornale","rivista","mensile","settimanale",
+    // 歌剧名/作曲家/专有词（命中即判意大利语，修复被判英语人名/地名或法语）
+    "turandot","orfeo","vespri","siciliani","biennale","venezia",
+    "giacomo","puccini","giuseppe","verdi","monteverdi","claudio",
+    "rossini","donizetti","bellini","vivaldi","boccherini"
 ]
 func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
+// 意大利语 L' 省音前缀（如 L'ORFEO / L'Elisir）：命中即视为意大利语特征，优先于法语省音
+func hasItalianElision(_ token: String) -> Bool {
+    let lower = token.lowercased()
+    for p in ["l'", "l’", "dell'", "dell’", "all'", "all’", "nell'", "nell’", "sull'", "sull’", "un'", "un’"] {
+        if lower.hasPrefix(p) {
+            let rest = String(lower.dropFirst(p.count))
+            // L'ORFEO / L'Elisir 等：去掉省音前缀后是意大利语强制词或意语形态 → 判意语
+            if !rest.isEmpty && (italianForceList.contains(rest) || tokenLooksItalian(rest)) { return true }
+        }
+    }
+    return false
+}
 
 // ============================================================
 // MARK: - 越南语识别（独有字符权重最高）
@@ -711,6 +736,8 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         // 避免 BOTSWANA/ESSENTIAL 等英语词被误伤为意大利语。
         if isItalianForced(tok) { s.it += 4 }
         else if !h.en && tokenLooksItalian(tok) { s.it += 2 }
+        // 意大利语 L' 省音（L'ORFEO 等）：高权重判意语，压过法语省音
+        if hasItalianElision(tok) { s.it += 4 }
         // 波兰语
         if tokenLooksPolish(tok) { s.pl += 2 }
         // 葡萄牙语
@@ -838,6 +865,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if tokenLooksVietnamese(one) { return ("vi", true) }
             if isIndonesianForced(one) { return ("id", true) }
+            // 意大利语 L' 省音（L'ORFEO）优先于法语省音判定
+            if hasItalianElision(one) { return ("it", true) }
             if isFrenchForced(one) { return ("fr", true) }
             if hasFrenchElision(one) { return ("fr", true) }
             if isSpanishForced(one) { return ("es", true) }
