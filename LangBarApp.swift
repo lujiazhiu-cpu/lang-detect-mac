@@ -30,7 +30,7 @@ import Carbon.HIToolbox   // 全局快捷键 RegisterEventHotKey
 let langCN: [String: String] = [
     "it": "意大利语", "pt": "葡萄牙语", "vi": "越南语", "id": "印尼语",
     "ja": "日语", "ko": "韩语", "th": "泰语", "ar": "阿拉伯语",
-    "de": "德语", "fr": "法语", "en": "英语", "pl": "波兰语",
+    "de": "德语", "fr": "法语", "en": "英语", "pl": "波兰语", "es": "西班牙语",
     "zh": "中文",
     "name": "英语（人名/地名）", "num": "数字", "und": "未识别"
 ]
@@ -38,7 +38,9 @@ func cnName(_ code: String) -> String { langCN[code] ?? code }
 
 let langColor: [String: NSColor] = [
     "de": .systemBlue, "en": .systemGreen, "fr": .systemPurple, "pl": .systemYellow,
-    "it": .systemTeal, "pt": .systemOrange, "es": .systemBrown,
+    "it": .systemTeal, "pt": .systemOrange,
+    // 西班牙语：橙红色，与葡萄牙语(橙)/法语(紫)明显区分
+    "es": NSColor(calibratedRed: 0.95, green: 0.35, blue: 0.10, alpha: 1.0),
     "vi": .systemPink, "id": .systemIndigo, "ja": .systemRed,
     "ko": .magenta, "th": .brown, "ar": .darkGray,
     "zh": .orange,
@@ -49,7 +51,7 @@ func color(_ code: String) -> NSColor { langColor[code] ?? .gray }
 let targetLangs: [NLLanguage] = [
     .italian, .portuguese, .vietnamese, .indonesian,
     .japanese, .korean, .thai, .arabic,
-    .german, .french, .english, .polish,
+    .german, .french, .english, .polish, .spanish,
     .simplifiedChinese, .traditionalChinese
 ]
 
@@ -57,7 +59,7 @@ let targetLangs: [NLLanguage] = [
 // （如荷兰语 nl / 斯洛伐克语 sk），凡不在此集合内的结果一律不采信，避免误判。
 let allowedLangCodes: Set<String> = [
     "it", "pt", "vi", "id", "ja", "ko", "th", "ar",
-    "de", "fr", "en", "pl", "zh"
+    "de", "fr", "en", "pl", "es", "zh"
 ]
 
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
@@ -307,7 +309,14 @@ let englishForceList: Set<String> = [
     "anaerobic","organization","few","espresso","roast","arabica","robusta","aroma",
     "flavor","flavour","notes","process","honey","single","medium","dark","light",
     "brand","shop","store","sale","quality","premium","fresh","official","studio","design",
-    "pride"
+    "pride",
+    // 英语短句/杂志栏目词（修复被误判德语）
+    "consulting","stories","beauty","living","lifestyle","advertising","businesses",
+    "business","next","level","fashion","travel","food","health","home","people",
+    "news","culture","interview","review","guide","special","edition","magazine",
+    // 英语月份（英德共用月份强制判英语，修复被判印尼/波兰/泰语）
+    "january","february","march","april","may","june","july","august",
+    "september","october","november","december"
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
@@ -333,7 +342,14 @@ let germanForceList: Set<String> = [
     // 学习类词
     "lernen","lernhilfe","lernkarte",
     // 出版社/机构
-    "zeitschrift","magazin","ausgabe","heft","seite"
+    "zeitschrift","magazin","ausgabe","heft","seite",
+    // 纯德语词（修复被误判「英语人名/地名」）
+    "freizeit","steuersparakademie","wissen","größtes","groesstes","eisfeld",
+    "jahre","jahr","werbung","medien","daten","fahren","sonntag","zahnbehandlung",
+    "winterparadies","programm","größte","groesste","größer","groesser",
+    "freiheit","gesundheit","sicherheit","zukunft","erfolg","angebot","angebote",
+    // 德语专有月份（英德共用的 April/August/September/November 归英语，此处仅收德语独有拼写）
+    "januar","februar","märz","maerz","mai","juni","juli","oktober","dezember"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -375,7 +391,12 @@ let frenchForceList: Set<String> = [
     "théâtre","theatre","rencontres","ateliers","projections","réfugié","refugie",
     "réfugiés","refugies","billetterie","entrée","entree","adresse","association",
     "mondiale","concert","danse","repas","expo","expos",
-    "méliès","melies"
+    "méliès","melies",
+    // 法语零碎词（修复被误判越南语/意大利语）
+    "pratique","plein","air","caravanes","passe-partout","partir","famille",
+    "balades","balade","stationnement","nouvelles","nouvelle","déjà","deja",
+    "surprises","surprise","découverte","decouverte","autour","gratuit","gratuite",
+    "spectacle","spectacles","exposition","expositions","atelier","ateliers"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -510,6 +531,56 @@ func tokenLooksPortuguese(_ token: String) -> Bool {
 }
 
 // ============================================================
+// MARK: - 西班牙语识别（新增 · 修复西/葡语被误判德语，最高优先级）
+// ============================================================
+// 西班牙语独有强特征：ñ（西语专属字母）、¿ ¡（西语倒置标点）。命中即强判西语。
+let spanishDistinctChars: Set<Character> = ["ñ","Ñ","¿","¡"]
+// 西语重音字符 á é í ó ú（与葡/意/法共享）：作为西语强特征，含之即优先判西语。
+let spanishAccentChars: Set<Character> = ["á","é","í","ó","ú","Á","É","Í","Ó","Ú"]
+// 西班牙语强制词库：命中即高权重判西语（不区分大小写）。
+let spanishForceList: Set<String> = [
+    "qué","años","año","también","español","española","españa","historia","literatura",
+    "viajante","sábado","ciudad","vinhas","centro","histórico","historico","bairro",
+    "arquitetura","oscura","venecia","leer","partir","familia","tiempo","ahora","siempre",
+    "nunca","todo","todas","todos","toda","está","están","estás","estoy","después","despues",
+    "través","traves","según","segun","además","ademas","mientras","aunque","porque",
+    "cuando","dónde","donde","cómo","como","pero","para","con","del","las","los","una","uno",
+    "por","sin","más","mas","muy","tan","ser","estar","hacer","tener","poder","querer",
+    "saber","ver","dar","comer","beber","vivir","trabajar",
+    // 常见西语实义/功能词补充
+    "ellos","ellas","nosotros","vosotros","este","esta","esto","estos","estas","ese","esa",
+    "eso","aquel","aquella","hola","gracias","buenos","buenas","dias","días","noche","noches",
+    "mundo","vida","amor","tierra","fuego","agua","luz","noche","mujer","hombre","niño","niña",
+    "gente","trabajo","escuela","universidad","cultura","fiesta","fiestas","semana","mes",
+    "domingo","lunes","martes","miércoles","miercoles","jueves","viernes",
+    "enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","setiembre",
+    "octubre","noviembre","diciembre"
+]
+func isSpanishForced(_ token: String) -> Bool { spanishForceList.contains(token.lowercased()) }
+// 西语高频功能词/停用词
+let spanishStopwords: Set<String> = [
+    "el","la","lo","los","las","un","una","unos","unas","de","del","al","a","en","y","o",
+    "que","se","su","sus","le","les","me","te","nos","os","yo","tú","tu","él","ella","es","son",
+    "fue","era","ha","han","hay","muy","más","pero","como","porque","cuando","donde","quien"
+]
+// 西语典型词缀（含最小词长，避免误伤英文短词）
+let spanishSuffixes: [String] = ["ción","ciones","dad","dades","mente","ando","iendo",
+                                 "ado","ada","ados","adas","ería","aje","ísimo","ísima"]
+func tokenLooksSpanish(_ token: String) -> Bool {
+    // ñ / ¿ / ¡ 是西语独有强特征
+    if token.contains(where: { spanishDistinctChars.contains($0) }) { return true }
+    // 含 á é í ó ú 的词优先作西语强特征
+    if token.contains(where: { spanishAccentChars.contains($0) }) { return true }
+    if isSpanishForced(token) { return true }
+    let lower = token.lowercased()
+    if spanishStopwords.contains(lower) { return true }
+    if lower.count >= 5 {
+        for suf in spanishSuffixes where lower.hasSuffix(suf) { return true }
+    }
+    return false
+}
+
+// ============================================================
 // MARK: - 印尼语识别（强制词优先于德语/意大利语/英语）
 // ============================================================
 // 印尼语强制词：命中即高权重判印尼语（不区分大小写）。Dirgahayu 单列超高权重。
@@ -609,13 +680,17 @@ func spellHits(_ token: String) -> (de: Bool, en: Bool) {
 }
 
 // 多语种得分
-struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; var vi = 0; var pt = 0; var id = 0 }
+struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; var vi = 0; var pt = 0; var id = 0; var es = 0 }
 
 func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
     // ---- Pass 0: 上下文标志 ----
     let ctxHasVietChar = tokens.contains { hasVietnameseChar($0) }
     let ctxHasFrench = tokens.contains { isFrenchForced($0) || hasFrenchElision($0) || frenchStopwords.contains($0.lowercased()) }
+    // 西语上下文：块内出现 ñ/¿/¡ 或西语强制词时，含 á é í ó ú 的 token 偏西语
+    let ctxHasSpanish = tokens.contains {
+        $0.contains(where: { spanishDistinctChars.contains($0) }) || isSpanishForced($0)
+    }
     // ---- Pass 1: 逐 token 打分（保留全部既有信号）----
     for tok in tokens {
         let lower = tok.lowercased()
@@ -649,6 +724,10 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         // 越南语：独有字符 +8；停用词 +3
         if hasVietnameseChar(tok) { s.vi += 8 }
         else if vietnameseStopwords.contains(lower) { s.vi += 3 }
+        // 西班牙语：ñ/¿/¡ 独有字符 +6；强制词 +4；停用词/词缀 +2
+        if tok.contains(where: { spanishDistinctChars.contains($0) }) { s.es += 6 }
+        if isSpanishForced(tok) { s.es += 4 }
+        else if !h.en && !h.de && (spanishStopwords.contains(lower) || tokenLooksSpanish(tok)) { s.es += 2 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         if h.de && !h.en { s.de += 2 }
         else if h.en && !h.de { s.en += 2 }
@@ -662,13 +741,15 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         }
         // 法语上下文：块内已有明确法语词时，含共用重音字符的 token 偏法语
         if ctxHasFrench && tok.contains(where: { sharedRomanceAccents.contains($0) }) { s.fr += 2 }
+        // 西语上下文：块内已有明确西语标志时，含 á é í ó ú 的 token 偏西语
+        if ctxHasSpanish && tok.contains(where: { spanishAccentChars.contains($0) }) { s.es += 2 }
     }
     return s
 }
 
 // 返回得分最高的语种及其相对亚军的领先分
 func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
-    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it), ("vi", s.vi), ("pt", s.pt), ("id", s.id)].sorted { $0.1 > $1.1 }
+    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it), ("vi", s.vi), ("pt", s.pt), ("id", s.id), ("es", s.es)].sorted { $0.1 > $1.1 }
     return (arr[0].0, arr[0].1, arr[0].1 - arr[1].1)
 }
 
@@ -752,11 +833,14 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     //     isProperNounLike 误判为「英语（人名/地名）」。—— 修复问题 1/2/3
     if tokensNZ.count <= 1 {
         if let one = tokensNZ.first {
+            // 0) 西班牙语独有字符 ñ/¿/¡ → 西语（最高优先，绝无歧义）
+            if one.contains(where: { spanishDistinctChars.contains($0) }) { return ("es", true) }
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if tokenLooksVietnamese(one) { return ("vi", true) }
             if isIndonesianForced(one) { return ("id", true) }
             if isFrenchForced(one) { return ("fr", true) }
             if hasFrenchElision(one) { return ("fr", true) }
+            if isSpanishForced(one) { return ("es", true) }
             if isEnglishForced(one) { return ("en", true) }
             if isGermanForced(one) { return ("de", true) }
             // 意大利语强制词优先于英语人名（如 ADESSO/SICILIA）
@@ -770,6 +854,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if isPortugueseForced(one) { return ("pt", true) }
             if tokenLooksPortuguese(one) { return ("pt", true) }
             if tokenLooksIndonesian(one) { return ("id", true) }
+            // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
+            if tokenLooksSpanish(one) { return ("es", true) }
             // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
             let h = spellHits(one)
             if h.de && !h.en { return ("de", true) }
