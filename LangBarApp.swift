@@ -309,7 +309,12 @@ let frenchStopwords: Set<String> = [
     "le","la","les","un","une","des","du","de","au","aux","et","ou","sur","tout","tous",
     "toute","pour","dans","avec","par","sans","chez","vers","ce","cette","qui","que",
     "est","sont","collection","européenne","européen","juillet","artiste","érudit",
-    "géant","beaux","arts"
+    "géant","beaux","arts",
+    // 采样补充
+    "non","affiche","affiches","française","françaises","graphique","contemporaine",
+    "contemporaines","illustration","concours","guinguette","jeunesse","internationale",
+    "éditions","étoile","graphiste","edition","nocturne","insolites","authentiques",
+    "balade","autour","lieux","nuit"
 ]
 func stripElision(_ lower: String) -> String {
     for p in ["l'","d'","j'","qu'","n'","s'","t'","c'","m'"] {
@@ -319,7 +324,42 @@ func stripElision(_ lower: String) -> String {
 }
 func tokenLooksFrench(_ token: String) -> Bool {
     if token.contains(where: { frenchChars.contains($0) }) { return true }
-    return frenchStopwords.contains(stripElision(token.lowercased()))
+    if frenchStopwords.contains(stripElision(token.lowercased())) { return true }
+    let lowerF = stripElision(token.lowercased())
+    if lowerF.count >= 6 {
+        for suf in ["tion","sion","ique","aine","esse","eur","euse","ité","ais","aise"] where lowerF.hasSuffix(suf) { return true }
+    }
+    return false
+}
+
+// 意大利语特征字符 / 高频词 / 词缀
+let italianChars: Set<Character> = ["à","è","é","ì","í","ò","ó","ù","ú",
+                                    "À","È","É","Ì","Í","Ò","Ó","Ù","Ú"]
+let italianStopwords: Set<String> = [
+    "di","del","dei","della","delle","degli","dal","dalla","il","lo","la","le","gli","i",
+    "un","uno","una","con","per","che","chi","nel","nella","nei","negli","sul","sulla",
+    "e","ed","o","od","ma","se","come","dove","quando","tra","fra","su","da","in","a",
+    // 实义高频词（含采样新增）
+    "presentano","concerto","concerti","sabato","domenica","lunedì","martedì","mercoledì",
+    "giovedì","venerdì","settembre","ottobre","novembre","dicembre","gennaio","febbraio",
+    "vite","immagini","manifesto","manifesti","locandina","grafica","grafico","evento",
+    "eventi","sagra","sagre","serata","estiva","serigrafia","artigianale","teatro",
+    "edizioni","illustrazione","poster","festival","giochi","musicale","progetto",
+    "moderna","contemporanea","popolare","romanesca","italiano","italiana","ribellione",
+    "velocità","città","società"
+]
+// 意大利语典型词缀（含最小词长，避免误伤英文短词）
+let italianSuffixes: [String] = ["zione","zioni","ità","sione","ione","ismo","ista",
+                                 "iere","mente","ale","ano","ana","etto","etta","esca",
+                                 "aggio","ezza"]
+func tokenLooksItalian(_ token: String) -> Bool {
+    if token.contains(where: { italianChars.contains($0) }) { return true }
+    let lower = token.lowercased()
+    if italianStopwords.contains(lower) { return true }
+    if lower.count >= 6 {
+        for suf in italianSuffixes where lower.hasSuffix(suf) { return true }
+    }
+    return false
 }
 
 // 波兰语特征字符 / 高频词
@@ -386,7 +426,7 @@ func spellHits(_ token: String) -> (de: Bool, en: Bool) {
 }
 
 // 多语种得分
-struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0 }
+struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0 }
 
 func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
@@ -398,6 +438,7 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         if englishStopwords.contains(lower) { s.en += 2 }
         if tokenLooksGerman(tok) || isGermanGivenName(tok) { s.de += 2 }
         if tokenLooksFrench(tok) { s.fr += 2 }
+        if tokenLooksItalian(tok) { s.it += 2 }
         if tokenLooksPolish(tok) { s.pl += 2 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         let h = spellHits(tok)
@@ -410,7 +451,7 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
 
 // 返回得分最高的语种及其相对亚军的领先分
 func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
-    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl)].sorted { $0.1 > $1.1 }
+    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it)].sorted { $0.1 > $1.1 }
     return (arr[0].0, arr[0].1, arr[0].1 - arr[1].1)
 }
 
@@ -499,6 +540,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             // 3) 法语 / 波兰语特征 → 对应语种
             if tokenLooksFrench(one) { return ("fr", true) }
             if tokenLooksPolish(one) { return ("pl", true) }
+            if tokenLooksItalian(one) { return ("it", true) }
             // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
             let h = spellHits(one)
             if h.de && !h.en { return ("de", true) }
