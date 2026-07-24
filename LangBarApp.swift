@@ -126,7 +126,7 @@ let germanChars: Set<Character> = ["ä", "ö", "ü", "ß", "Ä", "Ö", "Ü"]
 let germanStopwords: Set<String> = [
     "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
     "und", "oder", "aber", "denn", "sondern", "doch",
-    "für", "mit", "von", "zum", "zur", "im", "am", "ins", "beim",
+    "für", "mit", "von", "zum", "zur", "vom", "im", "am", "ins", "beim",
     "auf", "aus", "bei", "nach", "über", "unter", "zwischen", "durch", "gegen", "ohne", "um", "vor", "hinter", "neben",
     "ist", "sind", "war", "waren", "wird", "werden", "wurde", "wurden", "hat", "haben", "hatte",
     "sein", "seine", "ihre", "nicht", "auch", "schon", "noch", "sehr", "mehr", "als", "wie", "wenn",
@@ -162,7 +162,8 @@ let germanRoots: Set<String> = [
     // 组织/学科/抽象名词词根
     "gesellschaft", "wissenschaft", "arbeit", "wirtschaft", "freiheit",
     "buch", "schule", "spiel", "herz", "geist", "meister",
-    "könig", "konig", "kaiser", "zeitung"
+    "könig", "konig", "kaiser", "zeitung",
+    "grafie", "grafien", "geber", "reiter", "kosmos", "blauer"
 ]
 
 // 德语常见名字（人名，全小写比较）——仅当 token 呈人名形态（首字母大写/全大写）时采信，
@@ -294,6 +295,13 @@ let englishForceList: Set<String> = [
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
+// 德语强制白名单：命中即判德语（不区分大小写），修复全大写德语词被误判英语。
+let germanForceList: Set<String> = [
+    "blauer","reiter","kosmos","fotografie","fotografien","herausgeber",
+    "verlag","kunst","werk","statt","bau","kunstverlag","blaue","blau"
+]
+func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
+
 // 法语特征字符 / 高频词（含省音 l' d' 处理）
 let frenchChars: Set<Character> = ["é","è","ê","ë","î","ï","ô","œ","æ","à","â","ù","û","ç",
                                    "É","È","Ê","Ë","Î","Ï","Ô","Œ","À","Â","Ù","Û","Ç"]
@@ -384,8 +392,9 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
     for tok in tokens {
         let lower = tok.lowercased()
+        if isGermanForced(tok) { s.de += 3 }
         if isEnglishForced(tok) { s.en += 3 }
-        if germanStopwords.contains(lower) { s.de += 2 }
+        if germanStopwords.contains(lower) { s.de += 3 }
         if englishStopwords.contains(lower) { s.en += 2 }
         if tokenLooksGerman(tok) || isGermanGivenName(tok) { s.de += 2 }
         if tokenLooksFrench(tok) { s.fr += 2 }
@@ -484,6 +493,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
         if let one = tokens.first {
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if isEnglishForced(one) { return ("en", true) }
+            if isGermanForced(one) { return ("de", true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
             if tokenLooksGerman(one) || isGermanGivenName(one) { return ("de", true) }
             // 3) 法语 / 波兰语特征 → 对应语种
