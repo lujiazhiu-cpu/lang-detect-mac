@@ -346,18 +346,84 @@ let italianStopwords: Set<String> = [
     "eventi","sagra","sagre","serata","estiva","serigrafia","artigianale","teatro",
     "edizioni","illustrazione","poster","festival","giochi","musicale","progetto",
     "moderna","contemporanea","popolare","romanesca","italiano","italiana","ribellione",
-    "velocità","città","società"
+    "velocità","città","società",
+    "illustratori","associazione","culturale","stamperia","laboratori","creatività",
+    "animazioni","illustrazioni","animazione","artistica","grafica","grafico",
+    "tipografico","impaginazione","editoria","mostre","pubblicità","napoletano"
 ]
 // 意大利语典型词缀（含最小词长，避免误伤英文短词）
 let italianSuffixes: [String] = ["zione","zioni","ità","sione","ione","ismo","ista",
                                  "iere","mente","ale","ano","ana","etto","etta","esca",
-                                 "aggio","ezza"]
+                                 "aggio","ezza",
+                                 "atori","azione","azioni","eria","iero","iera","ico","ica"]
 func tokenLooksItalian(_ token: String) -> Bool {
     if token.contains(where: { italianChars.contains($0) }) { return true }
     let lower = token.lowercased()
     if italianStopwords.contains(lower) { return true }
     if lower.count >= 6 {
         for suf in italianSuffixes where lower.hasSuffix(suf) { return true }
+    }
+    return false
+}
+
+// ============================================================
+// MARK: - 越南语识别（独有字符权重最高）
+// ============================================================
+// 越南语独有字符（带下点/角标/特殊字母），出现即可判越南语。
+// 注意：ê ô â ç 等与葡/意/法共享，不放入独有集，避免误判。
+let vietnameseDistinctChars: Set<Character> = [
+    "đ","Đ","ă","Ă","ơ","Ơ","ư","Ư",
+    "ạ","ả","ấ","ầ","ẩ","ẫ","ậ","ắ","ằ","ẳ","ẵ","ặ",
+    "ẹ","ẻ","ẽ","ế","ề","ể","ễ","ệ",
+    "ỉ","ị","ọ","ỏ","ố","ồ","ổ","ỗ","ộ","ớ","ờ","ở","ỡ","ợ",
+    "ụ","ủ","ứ","ừ","ử","ữ","ự","ỳ","ỵ","ỷ","ỹ","ý",
+    "Ạ","Ả","Ấ","Ầ","Ậ","Ắ","Ặ","Ẹ","Ẻ","Ế","Ề","Ệ","Ị","Ọ","Ố","Ồ","Ộ","Ớ","Ờ","Ợ","Ụ","Ứ","Ừ","Ự"
+]
+func hasVietnameseChar(_ token: String) -> Bool {
+    token.contains { vietnameseDistinctChars.contains($0) }
+}
+let vietnameseStopwords: Set<String> = [
+    "và","của","trong","với","cho","được","thi","vẽ","đi","dừng","nước","thanh","toán",
+    "học","sinh","tuổi","thời","gian","nhận","cuộc","chủ","đề","yêu","cầu","đối","tượng",
+    "dự","gọi","lại","chậm","là","các","một","người","ngày","năm","hội","nhạc","đêm",
+    "triển","lãm","văn","hóa","nghệ","thuật","mỹ","nhiếp","ảnh","kiến","trúc","thiết","kế",
+    "đồ","họa","minh","họa","cổ","phục","nhà","hàng","tạp","chí","bìa","sức","khỏe",
+    "tuyên","truyền","khoa","hướng","dẫn","giáo","dục","sự","kiện","lễ","áp","phích"
+]
+func tokenLooksVietnamese(_ token: String) -> Bool {
+    if hasVietnameseChar(token) { return true }
+    return vietnameseStopwords.contains(token.lowercased())
+}
+
+// ============================================================
+// MARK: - 葡萄牙语识别
+// ============================================================
+// 葡语较独有：ã õ（鼻化），命中权重高；â ê ô ç 与法/意共享，权重普通。
+let portugueseDistinctChars: Set<Character> = ["ã","õ","Ã","Õ"]
+let portugueseSharedChars: Set<Character> = ["â","ê","ô","ç","á","é","í","ó","ú","à","Â","Ê","Ô","Ç","Á","É","Í","Ó","Ú","À"]
+let portugueseStopwords: Set<String> = [
+    "de","do","da","dos","das","em","no","na","nos","nas","um","uma","uns","umas",
+    "que","para","com","por","ao","aos","à","às","onde","como","mais","muito","não",
+    "ganham","sonhos","festa","feira","feiras","cartaz","cartazes","tipografia",
+    "artesanato","prefeitura","secretaria","escola","colégio","união","teatro",
+    "internacional","nacional","académica","academica","estúdio","estudio"
+]
+// 葡语强制词：月份 + 标志词（命中即判葡语，不区分大小写）
+let portugueseForceList: Set<String> = [
+    "aniversário","aniversario","janeiro","fevereiro","março","marco","abril","maio",
+    "junho","julho","agosto","setembro","outubro","novembro","dezembro","dez",
+    "coração","informação","edição"
+]
+func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
+let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
+                                    "dade","mente","agem","ença","ança","ura","ense"]
+func tokenLooksPortuguese(_ token: String) -> Bool {
+    if token.contains(where: { portugueseDistinctChars.contains($0) }) { return true }
+    if isPortugueseForced(token) { return true }
+    let lower = token.lowercased()
+    if portugueseStopwords.contains(lower) { return true }
+    if lower.count >= 5 {
+        for suf in portugueseSuffixes where lower.hasSuffix(suf) { return true }
     }
     return false
 }
@@ -426,7 +492,7 @@ func spellHits(_ token: String) -> (de: Bool, en: Bool) {
 }
 
 // 多语种得分
-struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0 }
+struct LangScore { var de = 0; var en = 0; var fr = 0; var pl = 0; var it = 0; var vi = 0; var pt = 0 }
 
 func latinLangScore(_ tokens: [String]) -> LangScore {
     var s = LangScore()
@@ -440,6 +506,13 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
         if tokenLooksFrench(tok) { s.fr += 2 }
         if tokenLooksItalian(tok) { s.it += 2 }
         if tokenLooksPolish(tok) { s.pl += 2 }
+        // 越南语独有字符 → 极高权重；停用词 → 高权重
+        if hasVietnameseChar(tok) { s.vi += 5 }
+        else if vietnameseStopwords.contains(lower) { s.vi += 3 }
+        // 葡语：鼻化字符/强制词 → 高权重；停用词/后缀 → 普通
+        if tok.contains(where: { portugueseDistinctChars.contains($0) }) { s.pt += 3 }
+        if isPortugueseForced(tok) { s.pt += 3 }
+        else if tokenLooksPortuguese(tok) { s.pt += 2 }
         // 拼写词典：仅德语命中→de；仅英语命中→en；两者都命中(loanword)→偏英语 en+1
         let h = spellHits(tok)
         if h.de && !h.en { s.de += 2 }
@@ -451,7 +524,7 @@ func latinLangScore(_ tokens: [String]) -> LangScore {
 
 // 返回得分最高的语种及其相对亚军的领先分
 func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
-    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it)].sorted { $0.1 > $1.1 }
+    let arr = [("de", s.de), ("en", s.en), ("fr", s.fr), ("pl", s.pl), ("it", s.it), ("vi", s.vi), ("pt", s.pt)].sorted { $0.1 > $1.1 }
     return (arr[0].0, arr[0].1, arr[0].1 - arr[1].1)
 }
 
@@ -533,6 +606,7 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     if tokens.count <= 1 {
         if let one = tokens.first {
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
+            if tokenLooksVietnamese(one) { return ("vi", true) }
             if isEnglishForced(one) { return ("en", true) }
             if isGermanForced(one) { return ("de", true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
@@ -541,6 +615,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if tokenLooksFrench(one) { return ("fr", true) }
             if tokenLooksPolish(one) { return ("pl", true) }
             if tokenLooksItalian(one) { return ("it", true) }
+            if isPortugueseForced(one) { return ("pt", true) }
+            if tokenLooksPortuguese(one) { return ("pt", true) }
             // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
             let h = spellHits(one)
             if h.de && !h.en { return ("de", true) }
