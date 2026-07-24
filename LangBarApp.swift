@@ -150,25 +150,153 @@ let germanSuffixMinLen: [(suf: String, minLen: Int)] = [
     ("lich", 5), ("isch", 5), ("haft", 6), ("tät", 4)
 ]
 
-// 判断单个 token 是否带明显德语形态（特殊字符 或 构词后缀）
+// 德语高频词根/关键词（子串匹配，全小写；全大写/首字母大写时同样命中）。
+// 用于识别「全大写德语词」（WERK/STATT/BASTO）与「德语复合词」（Kunstverlag = Kunst+Verlag）。
+// 均为 ≥4 字母、与英文碰撞低的强信号词根；命中即判德语，避免走「英语专名」路径。
+let germanRoots: Set<String> = [
+    // 用户点名要求的高频词根
+    "werk", "statt", "verlag", "kunst", "bast", "tier",
+    // 地名/建筑/机构类复合词常见词根
+    "stadt", "haus", "dorf", "wald", "garten", "kirch", "markt", "platz",
+    "strasse", "straße", "schloss", "bahnhof", "brücke", "brucke",
+    // 组织/学科/抽象名词词根
+    "gesellschaft", "wissenschaft", "arbeit", "wirtschaft", "freiheit",
+    "buch", "schule", "spiel", "herz", "geist", "meister",
+    "könig", "konig", "kaiser", "zeitung"
+]
+
+// 德语常见名字（人名，全小写比较）——仅当 token 呈人名形态（首字母大写/全大写）时采信，
+// 避免误伤英文小写功能词（如 "else" 作「否则」义）。用于识别德语人名（如 Else Stadler-Jacobs）。
+let germanGivenNames: Set<String> = [
+    "else", "otto", "hans", "fritz", "greta", "ilse", "ursula", "jürgen", "jurgen",
+    "heinz", "kurt", "dieter", "wolfgang", "günther", "gunther", "helga", "gerda",
+    "inge", "klaus", "horst", "ernst", "wilhelm", "friedrich", "heinrich", "ludwig",
+    "gottfried", "hannelore", "gisela", "gudrun", "bernd", "uwe", "jens", "jörg", "jorg",
+    "anneliese", "hedwig", "waltraud", "hertha", "kathe", "käthe", "gustav", "reinhard"
+]
+
+// token 是否呈「人名/大写形态」（首字母大写，含全大写）
+func isCapitalizedToken(_ token: String) -> Bool {
+    guard let f = token.first else { return false }
+    let fs = String(f)
+    return fs == fs.uppercased() && fs != fs.lowercased()
+}
+
+// token 是否为德语常见名字（仅在大写形态时采信）
+func isGermanGivenName(_ token: String) -> Bool {
+    guard isCapitalizedToken(token) else { return false }
+    return germanGivenNames.contains(token.lowercased())
+}
+
+// 判断单个 token 是否带明显德语形态（特殊字符 / 构词后缀 / 德语词根子串）
 func tokenLooksGerman(_ token: String) -> Bool {
     if token.contains(where: { germanChars.contains($0) }) { return true }
     let lower = token.lowercased()
     for (suf, minLen) in germanSuffixMinLen {
         if lower.count >= minLen && lower.hasSuffix(suf) { return true }
     }
+    // 德语词根子串匹配：全大写(WERK/STATT)、复合词(Kunstverlag)、变体(BASTO 含 bast) 均可命中
+    for root in germanRoots {
+        if lower.contains(root) { return true }
+    }
     return false
 }
 
-// 对拉丁文本按 token 打「德语 / 英语」得分：功能词命中 +2，德语形态命中 +1。
-// 用于在双语对照排版中，让每一行凭自身的功能词/词缀稳定归属，不依赖 NL 的模糊猜测。
+// 文本 tokens 中是否含任何德语特征（词根/词缀/特殊字符/德语人名）
+func hasGermanFeature(_ tokens: [String]) -> Bool {
+    return tokens.contains { tokenLooksGerman($0) || isGermanGivenName($0) }
+}
+
+// ============================================================
+// MARK: - NSSpellChecker 词典辅助（德语 / 英语拼写词典）
+// ============================================================
+
+// 词典判定结果：.german=德语词典命中 / .english=仅英语词典命中 / .none=两者都未命中或无词典
+enum SpellLangHit { case german, english, none }
+
+// 解析系统中实际可用的德/英拼写词典语言标识（如 de_DE / en_US）。
+// 若系统未安装对应词典则为 nil，届时词典辅助自动降级（不影响词根/词缀/人名规则）。
+func resolveSpellLanguage(_ prefixes: [String]) -> String? {
+    let avail = NSSpellChecker.shared.availableLanguages
+    for p in prefixes where avail.contains(p) { return p }
+    for p in prefixes {
+        if let hit = avail.first(where: { $0 == p || $0.hasPrefix(p + "_") || $0.hasPrefix(p + "-") }) {
+            return hit
+        }
+    }
+    return nil
+}
+
+let germanSpellLang: String? = resolveSpellLanguage(["de", "de_DE"])
+let englishSpellLang: String? = resolveSpellLanguage(["en", "en_US", "en_GB"])
+
+// NSSpellChecker 非线程安全，OCR 在后台队列执行，故对其访问统一加锁串行化。
+let spellLock = NSLock()
+let spellCacheLock = NSLock()
+var spellHitCache: [String: SpellLangHit] = [:]
+
+// 用指定语言的拼写词典检查单词是否拼写正确（即词典命中）。language 为 nil → 降级返回 false。
+func spellValid(_ word: String, language: String?) -> Bool {
+    guard let lang = language, !word.isEmpty else { return false }
+    spellLock.lock()
+    defer { spellLock.unlock() }
+    let r = NSSpellChecker.shared.checkSpelling(
+        of: word, startingAt: 0, language: lang,
+        wrap: false, inSpellDocumentWithTag: 0, wordCount: nil)
+    return r.location == NSNotFound
+}
+
+// 生成查词典的候选形态：原词 +（全大写时）Title Case 形态（WERK→Werk、BASTO→Basto）。
+func spellCandidates(_ token: String) -> [String] {
+    var cands = [token]
+    let hasLetter = token.unicodeScalars.contains { CharacterSet.letters.contains($0) }
+    let isAllUpper = hasLetter && token == token.uppercased() && token != token.lowercased()
+    if isAllUpper {
+        let lower = token.lowercased()
+        let titled = lower.prefix(1).uppercased() + lower.dropFirst()
+        cands.append(titled)
+    }
+    return cands
+}
+
+// 对单个 token 做德/英拼写词典判定：
+//   德语命中           → .german（优先，即便英语也命中）
+//   仅英语命中         → .english
+//   两者都未命中(专名/全大写缩写) → .none（不采信词典，交回词根/词缀规则）
+func spellCheckToken(_ token: String) -> SpellLangHit {
+    if germanSpellLang == nil && englishSpellLang == nil { return .none }
+    spellCacheLock.lock()
+    if let cached = spellHitCache[token] { spellCacheLock.unlock(); return cached }
+    spellCacheLock.unlock()
+
+    let cands = spellCandidates(token)
+    var deHit = false, enHit = false
+    for c in cands {
+        if !deHit && spellValid(c, language: germanSpellLang) { deHit = true }
+        if !enHit && spellValid(c, language: englishSpellLang) { enHit = true }
+    }
+    let hit: SpellLangHit = deHit ? .german : (enHit ? .english : .none)
+
+    spellCacheLock.lock(); spellHitCache[token] = hit; spellCacheLock.unlock()
+    return hit
+}
+
+// 对拉丁文本按 token 打「德语 / 英语」得分：功能词/德语特征命中 +2，英语功能词 +2，
+// NSSpellChecker 词典命中再 +2（德语优先）。用于在双语对照排版中让每行凭自身特征稳定归属。
 func latinLangScore(_ tokens: [String]) -> (de: Int, en: Int) {
     var de = 0, en = 0
     for tok in tokens {
         let lower = tok.lowercased()
         if germanStopwords.contains(lower) { de += 2 }
         if englishStopwords.contains(lower) { en += 2 }
-        if tokenLooksGerman(tok) { de += 1 }
+        // 德语词根/词缀/特殊字符，或德语人名 → 强信号 +2（让单个德语词也能触发判定）
+        if tokenLooksGerman(tok) || isGermanGivenName(tok) { de += 2 }
+        // NSSpellChecker 词典辅助加权：德语命中→德语；仅英语命中→英语；都未命中→交回规则
+        switch spellCheckToken(tok) {
+        case .german:  de += 2
+        case .english: en += 2
+        case .none:    break
+        }
     }
     return (de, en)
 }
@@ -244,21 +372,35 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     let tokens = latinTokens(t)
     let score = latinLangScore(tokens)
 
-    // ③-a 单 token：先判德语形态（词缀 -ung/-keit/-schaft/-bau… 或 ä ö ü ß），
-    //     避免「大写德语名词」（如 Ausbau、Gesellschaft、Freiheit）被 isProperNounLike
-    //     误判为「英语（人名/地名）」。—— 修复问题 2
+    // ③-a 单 token：先判德语形态（词根 werk/statt/verlag/kunst/bast/tier…、
+    //     构词后缀 -ung/-keit/-schaft/-bau…、特殊字符 ä ö ü ß，或德语人名 Else/Otto…），
+    //     避免「大写德语词/复合词/德语人名」（如 WERK、STATT、BASTO、Kunstverlag）被
+    //     isProperNounLike 误判为「英语（人名/地名）」。—— 修复问题 1/2/3
     if tokens.count <= 1 {
-        if let one = tokens.first, tokenLooksGerman(one) {
-            return ("de", true)
-        }
-        if isProperNounLike(t) {
-            return ("name", true)
+        if let one = tokens.first {
+            // 1) 词根/词缀/特殊字符/德语人名 → 德语
+            if tokenLooksGerman(one) || isGermanGivenName(one) {
+                return ("de", true)
+            }
+            // 2) NSSpellChecker 词典辅助：德语词典命中（含 WERK→Werk 转写）→ 德语，优先于专名
+            let hit = spellCheckToken(one)
+            if hit == .german {
+                return ("de", true)
+            }
+            // 3) 像专名/缩写/编号（且德语词典未命中）→ 专名
+            if isProperNounLike(t) {
+                return ("name", true)
+            }
+            // 4) 仅英语词典命中且不像专名（如小写普通英文词）→ 英语
+            if hit == .english {
+                return ("en", true)
+            }
         }
     }
 
-    // ③-b 规则强信号（稳定、可复现）：德/英功能词+形态计分，某一方明显占优（且领先≥2）
-    //     直接判定。用于消解「双语对照排版」中德英交替行被 NaturalLanguage 互判的问题。
-    //     —— 修复问题 1（同时也提升稳定性，修复问题 3）
+    // ③-b 规则强信号（稳定、可复现）：德/英功能词+词根+人名计分，某一方明显占优（且领先≥2）
+    //     直接判定。用于消解「双语对照排版」德英交替行互判，及德语人名/复合词被判英语的问题。
+    //     —— 修复问题 1/2（Else Stadler-Jacobs 等德语人名走此路径）
     if letters >= 3 {
         if score.de >= 2 && score.de - score.en >= 2 { return ("de", true) }
         if score.en >= 2 && score.en - score.de >= 2 { return ("en", true) }
@@ -283,8 +425,13 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             }
         }
     }
-    // ⑤ NL 判不准，但整体是专名/缩写/编号（如多词全大写 ARS SGN）→ 专名
+    // ⑤ NL 判不准，但整体像专名/缩写/编号（如多词全大写 ARS SGN）→ 默认专名；
+    //    但收窄专名路径：只要含任何德语特征（词根/词缀/特殊字符/德语人名）且无明显英语信号，
+    //    一律判德语，不再走「英语（人名/地名）」。—— 修复问题 1/2
     if isProperNounLike(t) {
+        if hasGermanFeature(tokens) && score.en < 2 {
+            return ("de", true)
+        }
         return ("name", true)
     }
     // ⑥ 太短的拉丁碎片 → 未识别
@@ -363,7 +510,8 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
     return blocks
 }
 
-func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed: Bool, outPath: String) {
+func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed: Bool,
+              singleDominant: Bool, dominantLang: String, outPath: String) {
     let W = CGFloat(cg.width), H = CGFloat(cg.height)
 
     // ---- 预先计算顶部信息条（浅色，独立于原图，不遮挡内容）----
@@ -375,18 +523,24 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
     let itemGap = hFont.pointSize * 1.1
     let lineH = hFont.pointSize * 1.7
 
-    // 组装条目：标题 + 各语种占比
+    // 组装条目：单语简洁模式只显示「整体：X」；混语显示标题 + 各语种占比
     struct HItem { let text: String; let color: NSColor?; let width: CGFloat }
     var items: [HItem] = []
-    let title = "语种占比" + (mixed ? "（混语）" : "")
-    items.append(HItem(text: title, color: nil,
-                       width: (title as NSString).size(withAttributes: hAttrs).width))
-    if total > 0 {
-        for (code, cnt) in breakdown {
-            let pct = Int((Double(cnt) / Double(total) * 100).rounded())
-            let t = "\(cnName(code)) \(pct)%"
-            let tw = (t as NSString).size(withAttributes: hAttrs).width
-            items.append(HItem(text: t, color: color(code), width: dotR + 6 + tw))
+    if singleDominant {
+        let t = "整体：\(cnName(dominantLang))"
+        let tw = (t as NSString).size(withAttributes: hAttrs).width
+        items.append(HItem(text: t, color: color(dominantLang), width: dotR + 6 + tw))
+    } else {
+        let title = "语种占比（混语）"
+        items.append(HItem(text: title, color: nil,
+                           width: (title as NSString).size(withAttributes: hAttrs).width))
+        if total > 0 {
+            for (code, cnt) in breakdown {
+                let pct = Int((Double(cnt) / Double(total) * 100).rounded())
+                let t = "\(cnName(code)) \(pct)%"
+                let tw = (t as NSString).size(withAttributes: hAttrs).width
+                items.append(HItem(text: t, color: color(code), width: dotR + 6 + tw))
+            }
         }
     }
     // 计算需要几行（按图宽自动换行）
@@ -432,7 +586,8 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
         (p.item.text as NSString).draw(at: NSPoint(x: x, y: textY), withAttributes: hAttrs)
     }
 
-    // ---- 逐块标注框 + 标签（画在原图区域内）----
+    // ---- 逐块标注框 + 标签（画在原图区域内）：仅混语时绘制；单语简洁模式跳过分行色块 ----
+    if !singleDominant {
     let fontSize = max(16, H * 0.014)
     let font = NSFont.boldSystemFont(ofSize: fontSize)
     for b in blocks {
@@ -460,6 +615,7 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
         ctx.fill(bg)
         (label as NSString).draw(at: NSPoint(x: lx + pad, y: ly + pad), withAttributes: attrs)
     }
+    }   // end if !singleDominant
 
     img.unlockFocus()
     if let tiff = img.tiffRepresentation,
@@ -477,6 +633,8 @@ struct DetectResult {
     let blockCount: Int
     let textLen: Int
     let annotatedPath: String
+    let singleDominant: Bool
+    let dominantLang: String
 }
 
 func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
@@ -497,10 +655,19 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         let share = Double(realLangs[1].value) / Double(total)
         if share >= 0.15 && realLangs[1].value >= 3 { mixed = true }
     }
-    annotate(cg, blocks: blocks, breakdown: sorted, mixed: mixed, outPath: annoPath)
+    // 单语简洁模式：某一真实语言占比 ≥80%（或仅一种真实语言）→ 只显示「整体：X」，不画分行色块
+    var singleDominant = false
+    var dominantLang = mainLang
+    if let top = realLangs.first, total > 0 {
+        dominantLang = top.key
+        if Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
+    }
+    annotate(cg, blocks: blocks, breakdown: sorted, mixed: mixed,
+             singleDominant: singleDominant, dominantLang: dominantLang, outPath: annoPath)
     let textLen = blocks.map { $0.text }.joined().trimmingCharacters(in: .whitespacesAndNewlines).count
     return DetectResult(mainLang: mainLang, mixed: mixed, breakdown: sorted,
-                        blockCount: blocks.count, textLen: textLen, annotatedPath: annoPath)
+                        blockCount: blocks.count, textLen: textLen, annotatedPath: annoPath,
+                        singleDominant: singleDominant, dominantLang: dominantLang)
 }
 
 // ============================================================
@@ -654,22 +821,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 // 汇总弹窗（双按钮）：显示在截图所在屏幕
                 let total = r.breakdown.reduce(0) { $0 + $1.1 }
-                var lines: [String] = []
-                for (code, cnt) in r.breakdown {
-                    let pct = total > 0 ? Int((Double(cnt) / Double(total) * 100).rounded()) : 0
-                    lines.append("\(cnName(code))  \(pct)%")
+                let msg: String
+                if r.singleDominant {
+                    // 单语简洁模式：整体一种语言 ≥80%，直接给结论，不列分行占比
+                    msg = """
+                    整体：\(cnName(r.dominantLang))
+                    文本块数：\(r.blockCount)
+
+                    （单一语言占比 ≥80%，不再分行标注）
+                    """
+                } else {
+                    var lines: [String] = []
+                    for (code, cnt) in r.breakdown {
+                        let pct = total > 0 ? Int((Double(cnt) / Double(total) * 100).rounded()) : 0
+                        lines.append("\(cnName(code))  \(pct)%")
+                    }
+                    let breakStr = lines.isEmpty ? "（无可信语种）" : lines.joined(separator: "\n")
+                    msg = """
+                    主体语种：\(cnName(r.mainLang))
+                    是否混语：\(r.mixed ? "是" : "否")
+                    文本块数：\(r.blockCount)
+
+                    各语种占比：
+                    \(breakStr)
+
+                    （专名=人名/地名，数字=纯数字，虚线灰框=未识别）
+                    """
                 }
-                let breakStr = lines.isEmpty ? "（无可信语种）" : lines.joined(separator: "\n")
-                let msg = """
-                主体语种：\(cnName(r.mainLang))
-                是否混语：\(r.mixed ? "是" : "否")
-                文本块数：\(r.blockCount)
-
-                各语种占比：
-                \(breakStr)
-
-                （专名=人名/地名，数字=纯数字，虚线灰框=未识别）
-                """
                 NSApp.activate(ignoringOtherApps: true)
                 let alert = NSAlert()
                 alert.messageText = "语种识别结果"
