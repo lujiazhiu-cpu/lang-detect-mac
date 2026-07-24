@@ -1,0 +1,31 @@
+[
+  {"token": "LEI", "expected": "it", "desc": "意大利语代词'她'，历史上被误判为英语人名/地名（force命中 lei）"},
+  {"token": "LUI", "expected": "it", "desc": "意大利语代词'他'，历史上被误判为英语人名/地名（force命中 lui）"},
+  {"token": "LO SENTE", "expected": "it", "desc": "意大利语短句'感觉到它'，历史上被误判英语（lo/sente 均在意语force）"},
+  {"token": "COSA", "expected": "it", "desc": "意大利语'什么/东西'，历史上被误判英语人名（force命中 cosa）"},
+  {"token": "NESSUNO", "expected": "it", "desc": "意大利语'没有人'，历史上被误判英语人名/地名（force命中 nessuno）"},
+  {"token": "LA TUA", "expected": "it", "desc": "意大利语'你的'，历史上被误判英语（tua 在意语force，la 需压过法/西停用词）"},
+  {"token": "HA CHIESTO", "expected": "it", "desc": "意大利语'询问了'，历史上被误判英语（chiesto 在意语force）"},
+  {"token": "UNA PERSONA", "expected": "it", "desc": "意大利语'一个人'，历史上被误判英语（una/persona 均在意语force）"},
+  {"token": "EPPURE ECCOLA LÌ", "expected": "it", "desc": "意大利语'然而她就在那儿'，含重音字符 ì，历史上被误判英语"},
+  {"token": "A TANTO COSÌ", "expected": "it", "desc": "意大利语碎句，含重音字符 ì（così），历史上被误判英语"},
+  {"token": "DI PULITO", "expected": "it", "desc": "意大利语'干净的'，历史上被误判英语（di 停用词 + pulito force）"},
+
+  {"token": "50 ÉTATS", "expected": "fr", "desc": "法语'50个州'，数字剥离后 états 含法语字符 é，历史上被误判英语/数字混判"},
+  {"token": "Un nouveau regard", "expected": "fr", "desc": "法语'一个新视角'，多词短句依赖停用词/NL 判定，历史上被误判英语"},
+  {"token": "BAYONNE", "expected": "fr", "desc": "法国城市巴约讷，历史上被误判英语人名/地名（force命中 bayonne）"},
+  {"token": "DU 15 AU 19 JUILLET", "expected": "fr", "desc": "法语日期'7月15至19日'，du/au 停用词 + juillet 月份force，历史上被误判"},
+  {"token": "ARTS", "expected": "fr", "desc": "法语语境下的'艺术'（VILLE DE ROUBAIX 海报），注意 arts 同时存在于英语force，存在英/法歧义"},
+  {"token": "VILLE DE ROUBAIX", "expected": "fr", "desc": "法语'鲁贝市'，roubaix 城市force + de 停用词，历史上被误判英语人名/地名"},
+
+  {"token": "Operetten", "expected": "de", "desc": "德语'轻歌剧'，历史上被误判英语（force命中 operetten）"},
+  {"token": "NEWS FOR MUSIC MAKERS", "expected": "en", "desc": "英语杂志栏目，历史上被误判德语（news/music/makers 均在英语force，for 为英语停用词）"},
+  {"token": "it's a violin thing", "expected": "en", "desc": "英语口语句，历史上被误判印尼语（violin/thing 在英语force）"},
+
+  {"token": "2026", "expected": "num", "desc": "纯数字年份，历史上被误判西班牙语，应归为数字类 num"},
+
+  {"token": "BUDGET PRODUCER", "expected": "en", "desc": "英语'预算制片人'，历史上被误判人名/地名，依赖英语词典/NL 判定"},
+  {"token": "LOVE IT", "expected": "en", "desc": "英语'喜欢它'，历史上被误判人名/地名（love 在英语force）"},
+  {"token": "BIG SPLASH", "expected": "en", "desc": "英语'大轰动'，历史上被误判人名/地名（big/splash 均在英语force）"},
+  {"token": "SUMMER VIBE", "expected": "en", "desc": "英语'夏日氛围'，历史上被误判人名/地名（summer/vibe 均在英语force）"}
+]

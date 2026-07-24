@@ -803,6 +803,152 @@ func bestLatinLang(_ s: LangScore) -> (code: String, score: Int, margin: Int) {
 }
 
 // ============================================================
+// MARK: - 任务A：短词字符特征规则（NL 不可信时的字符级覆盖）
+// ============================================================
+// 意大利语专有重音（grave à è ì ò ù + acuto é）——刻意不含法语 circonflexe/ç 及西/葡的 á í ó ú。
+let italianAccentChars: Set<Character> = ["à","è","é","ì","ò","ù","À","È","É","Ì","Ò","Ù"]
+// 法语专有字符：circonflexe â ê î ô û + ç + tréma ë ï ü(注:ü 归德) + œ
+let frenchOnlyChars: Set<Character> = ["â","ê","î","ô","û","ç","ë","ï","œ","æ",
+                                       "Â","Ê","Î","Ô","Û","Ç","Ë","Ï","Œ","Æ"]
+
+// 短词字符特征 → 语种码（confident=true 表示可直接采信）。无明显特征返回 nil。
+// 优先级：德语特殊字符(ä ö ü ß) > 法语专有(â ê î ô û ç) > 意语重音(à è é ì ò ù)。
+func shortWordCharFeature(_ token: String) -> String? {
+    // ä ö ü ß → 强制德语（德语独有，绝不可能是阿拉伯语/其他）
+    if token.contains(where: { germanChars.contains($0) }) { return "de" }
+    // â ê î ô û ç ë ï œ → 法语专有
+    if token.contains(where: { frenchOnlyChars.contains($0) }) { return "fr" }
+    // à è é ì ò ù 且不含法语专有字符 → 意大利语
+    if token.contains(where: { italianAccentChars.contains($0) }) &&
+       !token.contains(where: { frenchOnlyChars.contains($0) }) { return "it" }
+    return nil
+}
+
+// ============================================================
+// MARK: - Apple NaturalLanguage 判定（封装，供 NL + fastText 协同）
+// ============================================================
+// NL 引擎"高置信"阈值：≥ 此值直接采信 NL；< 此值触发 fastText 补充验证（任务B）。
+let NL_HIGH_CONF: Double = 0.70
+// 纯 ASCII ≤3 短词：NL 概率低于此值则不强判，归 und（任务A）。
+let SHORT_ASCII_MIN_PROB: Double = 0.50
+
+func nlDetect(_ nlInput: String) -> (code: String, prob: Double)? {
+    let r = NLLanguageRecognizer()
+    r.languageConstraints = targetLangs
+    r.processString(nlInput)
+    let hyp = r.languageHypotheses(withMaximum: 1)
+    guard let lang = r.dominantLanguage?.rawValue else { return nil }
+    let code = lang.hasPrefix("zh") ? "zh" : lang
+    let prob = hyp[NLLanguage(lang)] ?? 0
+    return (code, prob)
+}
+
+// ============================================================
+// MARK: - 任务B：fastText 语种识别（NL 补充验证层）
+// ============================================================
+// 通过 Process() 调用本地 fasttext CLI + lid.176.ftz 模型（Facebook 开源，176 语言，约1MB）。
+// 二进制或模型缺失时自动降级（fastTextLang 返回 nil），完全不影响既有规则/NL 流程。
+// 可用环境变量覆盖：FASTTEXT_BIN / FASTTEXT_MODEL；LANGBAR_DISABLE_FASTTEXT=1 可整体关闭。
+let fastTextEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_FASTTEXT"] == nil
+// fastText 结果采信的最低概率
+let FASTTEXT_TRUST_PROB: Double = 0.50
+
+func resolveFastTextBinary() -> String? {
+    let fm = FileManager.default
+    if let p = ProcessInfo.processInfo.environment["FASTTEXT_BIN"], fm.isExecutableFile(atPath: p) { return p }
+    var cands = ["/opt/homebrew/bin/fasttext", "/usr/local/bin/fasttext", "/usr/bin/fasttext"]
+    cands.append((NSHomeDirectory() as NSString).appendingPathComponent("lang-detect-mac/bin/fasttext"))
+    for c in cands where fm.isExecutableFile(atPath: c) { return c }
+    return nil
+}
+func resolveFastTextModel() -> String? {
+    let fm = FileManager.default
+    if let p = ProcessInfo.processInfo.environment["FASTTEXT_MODEL"], fm.fileExists(atPath: p) { return p }
+    var cands: [String] = []
+    if let res = Bundle.main.resourcePath { cands.append(res + "/lid.176.ftz") }
+    cands.append((NSHomeDirectory() as NSString).appendingPathComponent("lang-detect-mac/Resources/lid.176.ftz"))
+    cands.append("Resources/lid.176.ftz")
+    for c in cands where fm.fileExists(atPath: c) { return c }
+    return nil
+}
+let fastTextBin: String? = fastTextEnabled ? resolveFastTextBinary() : nil
+let fastTextModel: String? = fastTextEnabled ? resolveFastTextModel() : nil
+let fastTextAvailable: Bool = (fastTextBin != nil && fastTextModel != nil)
+
+// fastText 结果缓存（含负缓存），避免对同一文本重复启动进程
+struct FTCacheEntry { let value: (code: String, prob: Double)? }
+let ftCacheLock = NSLock()
+var ftCache: [String: FTCacheEntry] = [:]
+
+// fastText 标签(__label__xx) → 内部语种码
+func ftLabelToCode(_ label: String) -> String? {
+    let raw = label.replacingOccurrences(of: "__label__", with: "").lowercased()
+    switch raw {
+    case "zh", "zh-cn", "zh-tw", "wuu", "yue", "zho": return "zh"
+    default: return raw
+    }
+}
+
+// 调用 fastText 判定单块文本语种；不可用/失败/超时 → nil
+func fastTextLang(_ text: String) -> (code: String, prob: Double)? {
+    guard fastTextAvailable, let bin = fastTextBin, let model = fastTextModel else { return nil }
+    let key = normalizedKey(text)
+    ftCacheLock.lock()
+    if let cached = ftCache[key] { ftCacheLock.unlock(); return cached.value }
+    ftCacheLock.unlock()
+
+    let result: (code: String, prob: Double)? = {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: bin)
+        // predict-prob <model> - 1 : 从 stdin 读入，输出 top-1 标签及概率
+        proc.arguments = ["predict-prob", model, "-", "1"]
+        let inPipe = Pipe(); let outPipe = Pipe()
+        proc.standardInput = inPipe
+        proc.standardOutput = outPipe
+        proc.standardError = Pipe()
+        do { try proc.run() } catch { return nil }
+        // fastText 按行分样本：换行折叠成空格，保证单行输入
+        let oneLine = text.replacingOccurrences(of: "\n", with: " ")
+                          .replacingOccurrences(of: "\r", with: " ") + "\n"
+        inPipe.fileHandleForWriting.write(oneLine.data(using: .utf8) ?? Data())
+        inPipe.fileHandleForWriting.closeFile()
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard let out = String(data: outData, encoding: .utf8) else { return nil }
+        // 输出形如: "__label__it 0.8734"
+        let parts = out.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+        guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
+              let prob = Double(parts[1]) else { return nil }
+        return (code, prob)
+    }()
+
+    ftCacheLock.lock(); ftCache[key] = FTCacheEntry(value: result); ftCacheLock.unlock()
+    return result
+}
+
+// NL + fastText 协同判定：NL 高置信直接用；否则用 fastText 覆盖（若可信且在白名单内）。
+// 返回 (code, confident)；两者都不可信时返回 nil，交回上层规则。
+func nlPlusFastText(_ nlInput: String, letters: Int) -> (code: String, confident: Bool)? {
+    let nl = nlDetect(nlInput)
+    let nlProb = nl?.prob ?? 0
+    // NL 高置信：直接采信
+    if let nl = nl, nlProb >= NL_HIGH_CONF, allowedLangCodes.contains(nl.code) {
+        return (nl.code, true)
+    }
+    // NL 置信度 < 0.7 → fastText 补充验证并覆盖
+    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_TRUST_PROB, allowedLangCodes.contains(ft.code) {
+        return (ft.code, true)
+    }
+    // fastText 不可用/不可信：退回 NL 原有阈值逻辑（长文放宽、短文从严）
+    if let nl = nl, allowedLangCodes.contains(nl.code) {
+        let need = letters >= 12 ? 0.50 : NL_PROB_MIN
+        if nlProb >= need { return (nl.code, true) }
+    }
+    return nil
+}
+
+
+// ============================================================
 // MARK: - 语种判定（稳定入口 + 实现）
 // ============================================================
 
@@ -896,6 +1042,10 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if isGermanForced(one) { return ("de", true) }
             // 意大利语强制词优先于英语人名（如 ADESSO/SICILIA）
             if isItalianForced(one) { return ("it", true) }
+            // 任务A：短词(≤4字符)字符特征覆盖 —— 意语重音 à è é ì ò ù → it；
+            //   法语专有 â ê î ô û ç → fr；德语 ä ö ü ß → de（不走 NL，直接采信）。
+            //   放在强制词表之后，保证 qué/café 等被强制词表认领的词不被误抢。
+            if one.count <= 4, let cf = shortWordCharFeature(one) { return (cf, true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
             if tokenLooksGerman(one) || isGermanGivenName(one) { return ("de", true) }
             // 3) 法语 / 波兰语特征 → 对应语种
@@ -907,6 +1057,18 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if tokenLooksIndonesian(one) { return ("id", true) }
             // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
             if tokenLooksSpanish(one) { return ("es", true) }
+            // 任务A：纯 ASCII ≤3 短词且 NL 置信度低 → 不强判，先试 fastText，仍不可信则归 und
+            //   （避免 SGN/ARS/Mo. 等碎片被瞎猜为某语种）
+            if one.count <= 3 && one.allSatisfy({ $0.isASCII }) {
+                let p = nlDetect(nlInput)?.prob ?? 0
+                if p < SHORT_ASCII_MIN_PROB {
+                    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_TRUST_PROB,
+                       allowedLangCodes.contains(ft.code) {
+                        return (ft.code, true)
+                    }
+                    return ("und", false)
+                }
+            }
             // 4) 拼写词典：仅德语命中→德语；仅英语命中→英语；两者都命中→偏英语
             let h = spellHits(one)
             if h.de && !h.en { return ("de", true) }
@@ -927,29 +1089,20 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
         if best.score >= 2 && best.margin >= 2 { return (best.code, true) }
     }
 
-    // ④ 多词/普通词：用 NaturalLanguage 判定（输入已归一化，保证同文本同结果）
+    // ④ 多词/普通词：NL + fastText 协同判定（NL<0.7 时用 fastText 覆盖），输入已归一化保证同文本同结果
     if letters >= 3 {
-        let r = NLLanguageRecognizer()
-        r.languageConstraints = targetLangs
-        r.processString(nlInput)
-        let hyp = r.languageHypotheses(withMaximum: 1)
-        if let lang = r.dominantLanguage?.rawValue {
-            let code = lang.hasPrefix("zh") ? "zh" : lang
-            let prob = hyp[NLLanguage(lang)] ?? 0
-            // 文本越长越可信：长文本(≥12字母)放宽概率下限，短文本仍要求较高置信
-            let need = letters >= 12 ? 0.50 : NL_PROB_MIN
-            if allowedLangCodes.contains(code) && prob >= need {
-                // 规则强信号覆盖 NL：修复 NL 把 法语/波兰语/英语 误判为德语
-                let best = bestLatinLang(score)
-                if best.score >= 2 && best.margin >= 2 && best.code != code {
-                    return (best.code, true)
-                }
-                // NL 判德语但无任何真实德语特征，且英/法/波有信号 → 不默认德语（问题4）
-                if code == "de" && !hasGermanFeature(tokensNZ) && best.score >= 2 && best.code != "de" {
-                    return (best.code, true)
-                }
-                return (code, true)
+        if let res = nlPlusFastText(nlInput, letters: letters) {
+            let code = res.code
+            // 规则强信号覆盖 NL/fastText：修复把 法语/波兰语/英语 误判为德语
+            let best = bestLatinLang(score)
+            if best.score >= 2 && best.margin >= 2 && best.code != code {
+                return (best.code, true)
             }
+            // 判德语但无任何真实德语特征，且英/法/波有信号 → 不默认德语（问题4）
+            if code == "de" && !hasGermanFeature(tokensNZ) && best.score >= 2 && best.code != "de" {
+                return (best.code, true)
+            }
+            return (code, true)
         }
     }
     // ⑤ NL 判不准，但整体像专名/缩写/编号（如多词全大写 ARS SGN）→ 默认专名；
@@ -963,7 +1116,10 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     }
     // ⑥ 太短的拉丁碎片 → 未识别
     if letters < 2 { return ("und", false) }
-    // ⑦ 仍拿不准：取 NL 首选（限定目标白名单内），否则未识别
+    // ⑦ 仍拿不准：先用 fastText 兜底（可信才采），再取 NL 首选（限定目标白名单内），否则未识别
+    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_TRUST_PROB, allowedLangCodes.contains(ft.code) {
+        return (ft.code, true)
+    }
     let r2 = NLLanguageRecognizer()
     r2.languageConstraints = targetLangs
     r2.processString(nlInput)

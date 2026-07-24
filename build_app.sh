@@ -74,6 +74,14 @@ echo "[5/7] 放入菜单栏图标 ..."
 [ -f "$RES_DIR/menubar_icon.png" ]    && cp "$RES_DIR/menubar_icon.png"    "$APP/Contents/Resources/"
 [ -f "$RES_DIR/menubar_icon@2x.png" ] && cp "$RES_DIR/menubar_icon@2x.png" "$APP/Contents/Resources/"
 
+# 4b) 若已准备 fastText 模型（见 setup_fasttext.sh），一并打进 .app，使其自带补充验证层
+if [ -f "$RES_DIR/lid.176.ftz" ]; then
+    cp "$RES_DIR/lid.176.ftz" "$APP/Contents/Resources/"
+    echo "     ✅ 已内置 fastText 模型 lid.176.ftz（App 将自动启用 fastText 验证层）"
+else
+    echo "     ℹ️ 未发现 Resources/lid.176.ftz —— 先运行 bash setup_fasttext.sh 可启用 fastText 验证层（可选，缺失不影响运行）"
+fi
+
 # 5) 生成带圆角的 .icns 应用图标
 ICON_KEY=""
 if [ -f "$ICON_1024" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
