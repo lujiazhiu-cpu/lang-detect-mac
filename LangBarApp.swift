@@ -109,6 +109,26 @@ func isProperNounLike(_ text: String) -> Bool {
     return hasLetter
 }
 
+// 强制判「英语人名/地名(name)」：著名人名/地名，即使被其它语种短词规则命中也归专名。
+// 单 token（小写匹配）
+let properNounForceList: Set<String> = [
+    "corbusier", "ahmedabad", "bauhaus", "mies", "gropius", "niemeyer"
+]
+func isProperNounForced(_ token: String) -> Bool { properNounForceList.contains(token.lowercased()) }
+// 整块短语（归一化后小写匹配）：如 "le corbusier"（LE 会被误判意语，故整块保护）
+let properNounForcePhrases: Set<String> = [
+    "le corbusier", "le corbusier's", "le corbusiers"
+]
+
+// 短词英语兜底的「保护名单」：这些 ≤4 ASCII 短词不被"断词碎片→英语"规则覆盖
+// （德语冠词保持德语；意语高频代词/冠词保持意语——见任务2）
+let shortWordEnglishKeepList: Set<String> = [
+    // 德语冠词/限定词
+    "die","das","der","den","dem","des","ein","von",
+    // 意大利语高频代词/冠词（用户明确要求保留为意语）
+    "lei","lui","lo","la","le","li","gli","una","uno","cosa","il","non","che","chi"
+]
+
 // 拉丁文本按空白分词并去除首尾标点，返回有效 token 列表
 func latinTokens(_ text: String) -> [String] {
     return text.split { $0 == " " || $0 == "\n" || $0 == "\t" }
@@ -325,7 +345,12 @@ let englishForceList: Set<String> = [
     // 简单英语词（修复被误判印尼语/波兰语/法语）
     "enjoy","tasty","pieces","journal","splice","using","analog","analogue",
     // 英语音乐/出版词汇（修复被误判印尼语/意大利语/德语）
-    "violin","thing","arts","music","makers","maker","advertorials","advertorial"
+    "violin","thing","arts","music","makers","maker","advertorials","advertorial",
+    // 普通英语词/建筑词汇（修复被误判「英语人名/地名」或其他语种）
+    "form","follows","vernacular","architecture","building","buildings",
+    "why","do","black","casting","housing","association","millowners",
+    "hybrid","urbanity",
+    "chemsex"
 ]
 func isEnglishForced(_ token: String) -> Bool { englishForceList.contains(token.lowercased()) }
 
@@ -364,7 +389,9 @@ let germanForceList: Set<String> = [
     // 德语音乐/出版词汇（命中即判德语，修复被判英语/意大利语）
     "operetten","musicals","spielliteratur","musikpädagogik","musikpadagogik",
     "musikbuch","neuerscheinungen","frühjahr","fruehjahr","herbst",
-    "printausgaben","sonderwerbeformen","noten","notenausgabe","klavier","gesang"
+    "printausgaben","sonderwerbeformen","noten","notenausgabe","klavier","gesang",
+    // 德语编辑注释语/常见词（命中即判德语）
+    "herausgegeben","von","metropole","herausgeber","auflage","verlag","band"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -415,7 +442,10 @@ let frenchForceList: Set<String> = [
     // 法国城市名（命中即判法语，修复被判「英语人名/地名」）
     "bayonne","roubaix","bordeaux","toulouse","marseille","nantes","strasbourg",
     "grenoble","montpellier","rennes","brest","reims","dijon","lyon","nice",
-    "lille","nancy","angers","tours","orléans","orleans"
+    "lille","nancy","angers","tours","orléans","orleans",
+    // 法/意同形词，上下文多为法语（如 HYBRIDE）
+    "hybride","hybrides",
+    "mode","actus","statistiques","renversent","litterature","littérature","tech","têtu","tetu","avril","utile","mobilise","printemps","présidentielle","presidentielle","décembre","decembre","contre","pour","lucie","agnès","agnes","jean-baptiste"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -471,7 +501,7 @@ let italianForceList: Set<String> = [
     "cultura","sport","feste","settimana","giorno","anno",
     "mio","mia","tuo","tua","suo","sua","noi","voi","loro",
     "nel","nella","nelle","negli","nello","alle","agli","alla","al","del","della","delle","degli","dello",
-    "una","uno","non","per","con","che","chi","come","dove","quando","perché","perche",
+    "una","uno","non","per","che","chi","come","dove","quando","perché","perche",
     "giornale","rivista","mensile","settimanale",
     // 歌剧名/作曲家/专有词（命中即判意大利语，修复被判英语人名/地名或法语）
     "turandot","orfeo","vespri","siciliani","biennale","venezia",
@@ -484,7 +514,8 @@ let italianForceList: Set<String> = [
     "torino","pelleteria","opinione","richiesta","invadere","inarrestabile",
     "perché","perche","voglio","vorrei","chiesto","concesso","arriva","sicuro",
     "convenzionale","superficiale","sentirsi","essere","tornare","servire",
-    "prendere","biglietto","aereo","giorni","mese","cuoio","così","cosi","il"
+    "prendere","biglietto","aereo","giorni","mese","cuoio","così","cosi","il",
+    "serve","complice","giudice","boccia","brillare","testa"
 ]
 func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
 // 意大利语 L' 省音前缀（如 L'ORFEO / L'Elisir）：命中即视为意大利语特征，优先于法语省音
@@ -587,7 +618,7 @@ let spanishForceList: Set<String> = [
     "arquitetura","oscura","venecia","leer","partir","familia","tiempo","ahora","siempre",
     "nunca","todo","todas","todos","toda","está","están","estás","estoy","después","despues",
     "través","traves","según","segun","además","ademas","mientras","aunque","porque",
-    "cuando","dónde","donde","cómo","como","pero","para","con","del","las","los","una","uno",
+    "cuando","dónde","donde","cómo","como","pero","para","del","las","los","una","uno",
     "por","sin","más","mas","muy","tan","ser","estar","hacer","tener","poder","querer",
     "saber","ver","dar","comer","beber","vivir","trabajar",
     // 常见西语实义/功能词补充
@@ -597,7 +628,8 @@ let spanishForceList: Set<String> = [
     "gente","trabajo","escuela","universidad","cultura","fiesta","fiestas","semana","mes",
     "domingo","lunes","martes","miércoles","miercoles","jueves","viernes",
     "enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","setiembre",
-    "octubre","noviembre","diciembre"
+    "octubre","noviembre","diciembre",
+    "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios"
 ]
 func isSpanishForced(_ token: String) -> Bool { spanishForceList.contains(token.lowercased()) }
 // 西语高频功能词/停用词
@@ -850,8 +882,10 @@ func nlDetect(_ nlInput: String) -> (code: String, prob: Double)? {
 // 二进制或模型缺失时自动降级（fastTextLang 返回 nil），完全不影响既有规则/NL 流程。
 // 可用环境变量覆盖：FASTTEXT_BIN / FASTTEXT_MODEL；LANGBAR_DISABLE_FASTTEXT=1 可整体关闭。
 let fastTextEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_FASTTEXT"] == nil
-// fastText 结果采信的最低概率
+// fastText 结果采信的最低概率（旧：仅在 NL 低置信时用于补充验证的阈值）
 let FASTTEXT_TRUST_PROB: Double = 0.50
+// fastText 升级为「主判」后的采信阈值：prob ≥ 此值即直接采信 fastText 结果（任务：fastText 主判、NL 兜底）
+let FASTTEXT_PRIMARY_PROB: Double = 0.35
 
 func resolveFastTextBinary() -> String? {
     let fm = FileManager.default
@@ -881,11 +915,34 @@ let ftCacheLock = NSLock()
 var ftCache: [String: FTCacheEntry] = [:]
 
 // fastText 标签(__label__xx) → 内部语种码
+// lid.176 模型标签多为 ISO 639-1（两字母，如 en/fr/de），但为稳妥同时兼容
+// ISO 639-3（三字母，如 eng/fra/deu）。映射到 App 内部两字母码；无法映射的返回 nil（走 NL 兜底）。
 func ftLabelToCode(_ label: String) -> String? {
     let raw = label.replacingOccurrences(of: "__label__", with: "").lowercased()
     switch raw {
-    case "zh", "zh-cn", "zh-tw", "wuu", "yue", "zho": return "zh"
-    default: return raw
+    // 中文各变体归一
+    case "zh", "zh-cn", "zh-tw", "wuu", "yue", "zho", "cmn": return "zh"
+    // ISO 639-3 → 内部两字母码
+    case "eng": return "en"
+    case "fra", "fre": return "fr"
+    case "deu", "ger": return "de"
+    case "ita": return "it"
+    case "spa": return "es"
+    case "por": return "pt"
+    case "nld", "dut": return "nl"
+    case "pol": return "pl"
+    case "hrv": return "hr"
+    case "vie": return "vi"
+    case "ind": return "id"
+    case "jpn": return "ja"
+    case "kor": return "ko"
+    case "tha": return "th"
+    case "ara": return "ar"
+    // 已是两字母码：原样返回（en/fr/de/it/es/pt/nl/pl/hr/vi/id/ja/ko/th/ar…）
+    default:
+        // 仅接受 2~3 位字母的合法语言码，其余归 nil（如空串/噪声）
+        if raw.count >= 2 && raw.count <= 3 && raw.allSatisfy({ $0.isLetter }) { return raw }
+        return nil
     }
 }
 
@@ -926,20 +983,21 @@ func fastTextLang(_ text: String) -> (code: String, prob: Double)? {
     return result
 }
 
-// NL + fastText 协同判定：NL 高置信直接用；否则用 fastText 覆盖（若可信且在白名单内）。
+// fastText 主判 + NL 兜底：
+//   1) 先调 fastText（主判）：prob ≥ FASTTEXT_PRIMARY_PROB(0.35) 且在白名单内 → 直接采信；
+//   2) fastText 不可用 / 概率不足 → 回退 Apple NL：NL 高置信直接用，否则按长度阈值放宽/从严；
 // 返回 (code, confident)；两者都不可信时返回 nil，交回上层规则。
 func nlPlusFastText(_ nlInput: String, letters: Int) -> (code: String, confident: Bool)? {
+    // ① fastText 主判
+    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_PRIMARY_PROB, allowedLangCodes.contains(ft.code) {
+        return (ft.code, true)
+    }
+    // ② Apple NL 兜底
     let nl = nlDetect(nlInput)
     let nlProb = nl?.prob ?? 0
-    // NL 高置信：直接采信
     if let nl = nl, nlProb >= NL_HIGH_CONF, allowedLangCodes.contains(nl.code) {
         return (nl.code, true)
     }
-    // NL 置信度 < 0.7 → fastText 补充验证并覆盖
-    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_TRUST_PROB, allowedLangCodes.contains(ft.code) {
-        return (ft.code, true)
-    }
-    // fastText 不可用/不可信：退回 NL 原有阈值逻辑（长文放宽、短文从严）
     if let nl = nl, allowedLangCodes.contains(nl.code) {
         let need = letters >= 12 ? 0.50 : NL_PROB_MIN
         if nlProb >= need { return (nl.code, true) }
@@ -965,12 +1023,17 @@ func normalizedKey(_ text: String) -> String {
 }
 
 // 返回 (语种code, 是否可信) —— 带缓存的稳定入口
-func detectBlockLang(_ text: String) -> (String, Bool) {
-    let key = normalizedKey(text)
+// prevContext / nextContext：相邻 block 文本（方向2 短词上下文窗口用）。
+func detectBlockLang(_ text: String, prevContext: String? = nil, nextContext: String? = nil) -> (String, Bool) {
+    // 上下文纳入缓存键，避免「同词不同邻居」串味
+    let key = normalizedKey(text) + "|<" + (prevContext ?? "") + ">|<" + (nextContext ?? "") + ">"
     detectCacheLock.lock()
     if let cached = detectCache[key] { detectCacheLock.unlock(); return cached }
     detectCacheLock.unlock()
-    let result = detectBlockLangImpl(text)
+    // 取相邻 block 最靠近当前词的一个 token 作为前/后上下文
+    let prevTok = prevContext.flatMap { latinTokens($0).last }
+    let nextTok = nextContext.flatMap { latinTokens($0).first }
+    let result = detectBlockLangImpl(text, prevToken: prevTok, nextToken: nextTok)
     detectCacheLock.lock()
     detectCache[key] = result
     detectCacheLock.unlock()
@@ -978,7 +1041,10 @@ func detectBlockLang(_ text: String) -> (String, Bool) {
 }
 
 // 分类桶：具体语种 / name(专名) / num(数字) / und(未识别)
-func detectBlockLangImpl(_ text: String) -> (String, Bool) {
+// prevToken / nextToken：可选的相邻 token 上下文（方向2）。当被判定的 block 只含一个
+// 短词(≤4字符)时，单独送 fastText 极易误判(Con/Ti/LA/MODE…)，故把「前一词 + 当前词 +
+// 后一词」空格拼接后整体送 fastText 判定；拼不出上下文时退回对该词本身判定。
+func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: String? = nil) -> (String, Bool) {
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
     // 归一化后的 NL 输入：折叠空白，保留大小写；让轻微 OCR 空格差异不改变 NL 结果（稳定性）
     let nlInput = t.split { $0 == " " || $0 == "\n" || $0 == "\t" || $0 == "\r" }.joined(separator: " ")
@@ -1020,6 +1086,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     let tokensNZ = tokens.filter { !isNumericToken($0) }
     // 整块都是数字/日期/时间/价格 → 跳过，不识别不标注（与中文跳过一致，返回 "zh" 令 ocrBlocks 直接 continue）
     if !tokens.isEmpty && tokensNZ.isEmpty { return ("zh", true) }
+    // 任务3：著名人名/地名整块短语（如 LE CORBUSIER）→ 强制「英语人名/地名」
+    if properNounForcePhrases.contains(normalizedKey(t)) { return ("name", true) }
     let score = latinLangScore(tokensNZ)
 
     // ③-a 单 token：先判德语形态（词根 werk/statt/verlag/kunst/bast/tier…、
@@ -1030,6 +1098,34 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
         if let one = tokensNZ.first {
             // 0) 西班牙语独有字符 ñ/¿/¡ → 西语（最高优先，绝无歧义）
             if one.contains(where: { spanishDistinctChars.contains($0) }) { return ("es", true) }
+            // 任务3：著名人名/地名单词（AHMEDABAD/CORBUSIER 等）→ 强制专名
+            if isProperNounForced(one) { return ("name", true) }
+            // 任务2：纯 ASCII 无变音符的孤立短词/断词碎片，NL 不自信 → 优先英语
+            //   （Con→en 而非 es；Disobed→en 而非 id）。德语词与保护名单/专名不受影响。
+            if one.allSatisfy({ $0.isASCII }) && !one.contains("'") && !one.contains("’") {
+                let lo = one.lowercased()
+                let firstUpper = one.first.map { $0.isUppercase } ?? false
+                let allUpper = (one == one.uppercased()) && (one != one.lowercased())
+                let capForm = allUpper || firstUpper
+                let claimedByGermanic = isGermanForced(one) || tokenLooksGerman(one)
+                                      || isGermanGivenName(one) || germanStopwords.contains(lo)
+                if capForm && !claimedByGermanic && !shortWordEnglishKeepList.contains(lo) {
+                    // ≤4 短碎片：可覆盖罗曼语强制词(如 con)；>4 长碎片：尊重显式强制词表，仅覆盖弱启发
+                    let eligible = !isFrenchForced(one) && !isSpanishForced(one)
+                        && !isItalianForced(one) && !isIndonesianForced(one)
+                        && !isPortugueseForced(one) && !isEnglishForced(one)
+                    if eligible {
+                        // fastText 主判优先：拼写碎片先送 fastText，≥0.35 即采信；
+                        // 否则再看 NL 置信度，仍不足则英语兜底。
+                        if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
+                           allowedLangCodes.contains(ft.code) { return (ft.code, true) }
+                        let p = nlDetect(nlInput)?.prob ?? 0
+                        if p < 0.6 {
+                            return ("en", true)
+                        }
+                    }
+                }
+            }
             // 1) 英语强制白名单（EXPOSURE/COFFEE/…）→ 英语（最高优先）
             if tokenLooksVietnamese(one) { return ("vi", true) }
             if isIndonesianForced(one) { return ("id", true) }
@@ -1057,6 +1153,23 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
             if tokenLooksIndonesian(one) { return ("id", true) }
             // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
             if tokenLooksSpanish(one) { return ("es", true) }
+            // ===== fastText 主判（在字符特征/forceWords 之后、Apple NL 之前）=====
+            //   方向2：≤4 字符短词不单独送 fastText（易误判），改用「前词+当前词+后词」
+            //   拼接串作为上下文整体判定；无上下文时退回对该词本身判定。
+            //   prob ≥ FASTTEXT_PRIMARY_PROB(0.35) 且在白名单内 → 直接采信。
+            let ftInput: String = {
+                if one.count <= 4 {
+                    let ctx = [prevToken, one, nextToken]
+                        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    if ctx.count >= 2 { return ctx.joined(separator: " ") }
+                }
+                return nlInput
+            }()
+            if let ft = fastTextLang(ftInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
+               allowedLangCodes.contains(ft.code) {
+                return (ft.code, true)
+            }
             // 任务A：纯 ASCII ≤3 短词且 NL 置信度低 → 不强判，先试 fastText，仍不可信则归 und
             //   （避免 SGN/ARS/Mo. 等碎片被瞎猜为某语种）
             if one.count <= 3 && one.allSatisfy({ $0.isASCII }) {
@@ -1116,8 +1229,8 @@ func detectBlockLangImpl(_ text: String) -> (String, Bool) {
     }
     // ⑥ 太短的拉丁碎片 → 未识别
     if letters < 2 { return ("und", false) }
-    // ⑦ 仍拿不准：先用 fastText 兜底（可信才采），再取 NL 首选（限定目标白名单内），否则未识别
-    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_TRUST_PROB, allowedLangCodes.contains(ft.code) {
+    // ⑦ 仍拿不准：先用 fastText 主判兜底（≥0.35 即采），再取 NL 首选（限定目标白名单内），否则未识别
+    if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_PRIMARY_PROB, allowedLangCodes.contains(ft.code) {
         return (ft.code, true)
     }
     let r2 = NLLanguageRecognizer()
@@ -1156,13 +1269,18 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
     let sem = DispatchSemaphore(value: 0)
     let req = VNRecognizeTextRequest { request, _ in
         if let obs = request.results as? [VNRecognizedTextObservation] {
-            for o in obs {
+            // 先抽取每个 block 的首选文本，便于取相邻 block 作为短词上下文（方向2）
+            let texts: [String] = obs.map { $0.topCandidates(1).first?.string ?? "" }
+            for (i, o) in obs.enumerated() {
                 guard let cand = o.topCandidates(1).first else { continue }
                 let s = cand.string
                 if s.isEmpty { continue }
+                // 相邻 block 文本（跳过空串）作为前/后上下文
+                let prevCtx = i > 0 ? texts[..<i].last(where: { !$0.isEmpty }) : nil
+                let nextCtx = i + 1 < texts.count ? texts[(i+1)...].first(where: { !$0.isEmpty }) : nil
                 // 判定语种可信度
                 var lang: String
-                let (guessed, ok) = detectBlockLang(s)
+                let (guessed, ok) = detectBlockLang(s, prevContext: prevCtx, nextContext: nextCtx)
                 // 中文片段：直接跳过，不识别、不标注、不计入统计
                 if guessed == "zh" { continue }
                 // 三重不猜条件：OCR置信度低 / 文字太小 / 语种判定不可信
@@ -1269,8 +1387,10 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
         (p.item.text as NSString).draw(at: NSPoint(x: x, y: textY), withAttributes: hAttrs)
     }
 
-    // ---- 逐块标注框 + 标签（画在原图区域内）：仅混语时绘制；单语简洁模式跳过分行色块 ----
-    if !singleDominant {
+    // ---- 逐块标注框 + 标签（画在原图区域内）：始终绘制彩色分块标注 ----
+    //   任务【最高优先级】：即使某语言占比 ≥80%（singleDominant），也必须保留混语分块彩色标注，
+    //   否则「多本杂志封面(含德语副标题)」这类会退化为只显示「整体：英语」而丢失分块信息。
+    if true {
     let fontSize = max(16, H * 0.014)
     let font = NSFont.boldSystemFont(ofSize: fontSize)
     for b in blocks {
@@ -1344,7 +1464,9 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
     var dominantLang = mainLang
     if let top = realLangs.first, total > 0 {
         dominantLang = top.key
-        if Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
+        // 任务【最高优先级】：仅当"真实只有一种语言"才用简洁模式；只要有≥2种真实语言，
+        //   即使某语占比≥80% 也保留混语分块+占比，绝不退化为"整体判断一种语言"。
+        if realLangs.count <= 1 && Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
     }
     // 问题5：非中文真实语言 token 极少（<3）且截图含中文/拼音 → 判「未识别（主要为中文）」，不触发整体德语
     let realBlockCount = blocks.filter { $0.lang != "und" && $0.lang != "name" && $0.lang != "num" && $0.lang != "zh" }.count
@@ -1553,9 +1675,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 alert.informativeText = msg
                 alert.addButton(withTitle: "查看详细标注")   // 左：默认按钮 → 打开标注图
                 alert.addButton(withTitle: "好的")           // 右：取消按钮 → 直接关闭
-                // 布局后把弹窗居中到截图所在屏幕，再走模态（runModal(for:) 不会重新居中）
+                // 布局后把弹窗居中到「弹窗时刻鼠标所在屏幕」（任务4 防护），再走模态
                 alert.layout()
-                self.center(alert.window, on: self.captureScreen)
+                self.center(alert.window, on: self.dialogScreen())
                 let resp = NSApp.runModal(for: alert.window)
                 alert.window.orderOut(nil)
                 if resp == .alertFirstButtonReturn {
@@ -1573,6 +1695,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func targetScreen() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
+    }
+
+    // 结果弹窗应显示的屏幕（任务4 额外防护）：
+    // 截图时记录了 captureScreen；但弹窗真正出现时（异步 OCR 之后）用户/鼠标可能已在另一块屏。
+    // 这里在弹窗前重新取鼠标当前所在屏幕(live)，优先用 live，退回 captureScreen，再退回主屏。
+    // 这样即便 captureScreen 记录到了小屏、而用户此刻在大屏，弹窗也会跟到用户眼前。
+    func dialogScreen() -> NSScreen? {
+        let live = targetScreen()
+        return live ?? captureScreen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     // 把窗口居中到指定屏幕的可视区域；screen 为空则回退到系统默认居中
@@ -1632,8 +1763,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 先关闭上一次的结果窗口，避免叠加
         closeResultWindow()
 
-        // 计算窗口尺寸：自适应图片，但不超过（截图所在）屏幕可视区域的 85%
-        let screen = captureScreen ?? targetScreen() ?? NSScreen.main ?? NSScreen.screens.first
+        // 计算窗口尺寸：自适应图片，但不超过（弹窗时刻鼠标所在）屏幕可视区域的 85%
+        let screen = dialogScreen()
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let maxW = visible.width * 0.85
         let maxH = visible.height * 0.85
