@@ -917,7 +917,7 @@ func nlDetect(_ nlInput: String) -> (code: String, prob: Double)? {
 // ============================================================
 // MARK: - 任务B：fastText 语种识别（NL 补充验证层）
 // ============================================================
-// 通过 Process() 调用本地 fasttext CLI + lid.176.ftz 模型（Facebook 开源，176 语言，约1MB）。
+// 通过 Process() 调用本地 fasttext CLI + lid.176.bin 模型（Facebook 开源，176 语言，完整版约126MB，精度高于 .ftz 压缩版）。
 // 二进制或模型缺失时自动降级（fastTextLang 返回 nil），完全不影响既有规则/NL 流程。
 // 可用环境变量覆盖：FASTTEXT_BIN / FASTTEXT_MODEL；LANGBAR_DISABLE_FASTTEXT=1 可整体关闭。
 let fastTextEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_FASTTEXT"] == nil
@@ -938,9 +938,9 @@ func resolveFastTextModel() -> String? {
     let fm = FileManager.default
     if let p = ProcessInfo.processInfo.environment["FASTTEXT_MODEL"], fm.fileExists(atPath: p) { return p }
     var cands: [String] = []
-    if let res = Bundle.main.resourcePath { cands.append(res + "/lid.176.ftz") }
-    cands.append((NSHomeDirectory() as NSString).appendingPathComponent("lang-detect-mac/Resources/lid.176.ftz"))
-    cands.append("Resources/lid.176.ftz")
+    if let res = Bundle.main.resourcePath { cands.append(res + "/lid.176.bin") }
+    cands.append((NSHomeDirectory() as NSString).appendingPathComponent("lang-detect-mac/Resources/lid.176.bin"))
+    cands.append("Resources/lid.176.bin")
     for c in cands where fm.fileExists(atPath: c) { return c }
     return nil
 }
