@@ -432,7 +432,13 @@ func tokenLooksFrench(_ token: String) -> Bool {
     if frenchStopwords.contains(stripElision(token.lowercased())) { return true }
     let lowerF = stripElision(token.lowercased())
     if lowerF.count >= 6 {
-        for suf in ["tion","sion","ique","aine","esse","eur","euse","ité","ais","aise","iste"] where lowerF.hasSuffix(suf) { return true }
+        // 第9批·改动2 根本修复：从 tokenLooksFrench 后缀集中删除 "tion"/"sion"。
+        //   原因：英语高频词 nation/action/information/mission 等均以 -tion/-sion 结尾，
+        //   无护栏地把它们判成法语是历史误判根源。真正法语的 -tion/-sion 词几乎都带法语
+        //   变音符（会在上方 frenchChars 命中）或属于 frenchForceList；无变音符裸词交由
+        //   suffixMorphologyLang(英语护栏)/fastText/NL 处理，不再在此硬判法语。
+        //   保留真正区分度高的法语形态后缀（-ique/-aine/-esse/-eur/-euse/-ité/-ais/-aise/-iste）。
+        for suf in ["ique","aine","esse","eur","euse","ité","ais","aise","iste"] where lowerF.hasSuffix(suf) { return true }
     }
     return false
 }
@@ -896,6 +902,45 @@ func shortWordCharFeature(_ token: String) -> String? {
 }
 
 // ============================================================
+// MARK: - 第9批·改动2：罗曼语族 + 英语 词尾形态学规则（字符集前置阶段）
+// ============================================================
+// 取词末（小写）做后缀匹配，作为「字符集硬规则同区」的前置判据，优先级高于 fastText/NL。
+// 关键设计：
+//   1) 先匹配「更长更具体」的后缀（-zione 先于 -ione；-ción 先于 -ión），避免误归。
+//   2) 罗曼语 es/it/pt 的后缀区分度高（且多含重音/特有形态），可直接硬判。
+//   3) 法语 -tion/-sion/-ment/-eur/-eux/-eau/-ais 与英语高度撞车（nation/action/
+//      information/management…），故法语这几个后缀**加护栏**：仅当 token 含法语变音符
+//      (frenchChars/frenchOnlyChars) 时才判 fr；否则不判法语。
+//   4) 无变音符的纯 ASCII 词若以 -tion/-tions/-sion/-sions/-ment/-ments 结尾（拉丁字母
+//      文本中这些词尾绝大多数是英语；罗曼语用 -ción/-zione/-ção、-mente 等），判英语 en。
+//      —— 这是「-tion 英语也极多」的根本护栏：英语不因后缀被误判法语。
+// 未命中任何后缀返回 nil，交给后续既有链路（tokenLooks*/fastText/NL）。
+func suffixMorphologyLang(_ token: String) -> String? {
+    let lower = token.lowercased()
+    guard lower.count >= 4 else { return nil }
+    let hasFrenchChar = token.contains(where: { frenchChars.contains($0) || frenchOnlyChars.contains($0) })
+
+    // ① 葡语（含鼻化/重音，最具体）：-ção/-ções 先于 -ão；-ões
+    for suf in ["ção","ções","ões","ão"] where lower.hasSuffix(suf) { return "pt" }
+    // ② 意语：-zione/-zioni 先于 -ione；-ità/-aggio/-ello/-elli/-ismo
+    for suf in ["zione","zioni","aggio","ione","ità","ello","elli","ismo"] where lower.hasSuffix(suf) { return "it" }
+    // ③ 西语：-ción/-ciones 先于 -ión；-ería/-ías/-ario/-amos/-emos
+    for suf in ["ción","ciones","ería","ías","ario","amos","emos","ión"] where lower.hasSuffix(suf) { return "es" }
+    // ④ 葡语（无重音形态）：-eiro/-eira/-inha
+    for suf in ["eiro","eira","inha"] where lower.hasSuffix(suf) { return "pt" }
+    // ⑤ 法语（撞车后缀，加护栏：需含法语变音符）
+    if hasFrenchChar {
+        for suf in ["tion","sion","ment","eur","eux","eau","ais"] where lower.hasSuffix(suf) { return "fr" }
+    }
+    // ⑥ 英语护栏：纯 ASCII 无变音符 + 以 -tion/-sion/-ment 结尾 → en（不误判法语）
+    let pureASCIINoDiacritic = token.unicodeScalars.allSatisfy { $0.isASCII }
+    if pureASCIINoDiacritic {
+        for suf in ["tion","tions","sion","sions","ment","ments"] where lower.hasSuffix(suf) { return "en" }
+    }
+    return nil
+}
+
+// ============================================================
 // MARK: - Apple NaturalLanguage 判定（封装，供 NL + fastText 协同）
 // ============================================================
 // NL 引擎"高置信"阈值：≥ 此值直接采信 NL；< 此值触发 fastText 补充验证（任务B）。
@@ -1193,6 +1238,11 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             //   法语专有 â ê î ô û ç → fr；德语 ä ö ü ß → de（不走 NL，直接采信）。
             //   放在强制词表之后，保证 qué/café 等被强制词表认领的词不被误抢。
             if one.count <= 4, let cf = shortWordCharFeature(one) { return (cf, true) }
+            // 第9批·改动2：罗曼语族 + 英语 词尾形态学（字符集前置阶段，优先级高于 fastText/NL）。
+            //   放在 forceWords / 变音符硬规则之后、tokenLooks*(French/Polish/…) 之前，
+            //   使 -ção→pt、-ción→es、-zione→it 等在裸字符启发式之前生效，且英语 -tion/-sion/-ment
+            //   走英语护栏（不再被 tokenLooksFrench 误判法语）。
+            if let sfx = suffixMorphologyLang(one) { return (sfx, true) }
             // 2) 德语词根/词缀/特殊字符/德语人名 → 德语
             if tokenLooksGerman(one) || isGermanGivenName(one) { return ("de", true) }
             // 3) 法语 / 波兰语特征 → 对应语种
@@ -1536,8 +1586,11 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         }
         return c.sorted { $0.value > $1.value }.first?.key ?? "und"
     }
-    // block 是否为“硬命中”（forceWords 或含某语种独有变音符）→ 豁免平滑/白名单强改
+    // block 是否为“硬命中”（forceWords / 含某语种独有变音符 / 西里尔 / 后缀硬规则）→ 高置信，
+    //   豁免 平滑/白名单强改 与 第9批·改动1 页面级纠错。
     func blockHardHit(_ text: String) -> Bool {
+        // 西里尔 → 俄语硬命中
+        if text.unicodeScalars.contains(where: { (0x0400...0x04FF).contains($0.value) }) { return true }
         for tok in latinTokens(text) where !isNumericToken(tok) {
             let lo = tok.lowercased()
             if isFrenchForced(tok) || isGermanForced(tok) || isSpanishForced(tok)
@@ -1547,6 +1600,9 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
                 || frenchOnlyChars.contains($0) || italianAccentChars.contains($0)
                 || portugueseTendChars.contains($0) || frenchTendChars.contains($0)
                 || hungarianDistinctChars.contains($0) }) { return true }
+            // 第9批·改动2 后缀硬规则命中（es/it/pt/fr，排除英语护栏 en）→ 视为硬命中，
+            //   避免被页面主语种/白名单覆盖（如页面英语但某词是 -zione 意语）。
+            if let s = suffixMorphologyLang(tok), s != "en" { return true }
         }
         return false
     }
@@ -1561,30 +1617,62 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         }
     }
 
-    let domForSmoothing = firstPassDominant(rawBlocks)
-    // 计算主语种占比（真实语种，用于方向3 的 ≥80% 判断）
-    var realCount: [String: Int] = [:]
-    for b in rawBlocks where b.lang != "und" && b.lang != "num" && b.lang != "name" {
-        realCount[b.lang, default: 0] += letterCount(b.text)
+    // ============================================================
+    // 第9批·改动1【最高】页面级主语种预判 + 低置信行纠错（取代旧「方向3 碎词平滑」）
+    // ============================================================
+    // 流程：
+    //   1) 收集所有 OCR 块文本，排除「数字块」与「中文块」，拼成一整段送 fastText，
+    //      得页面主语种 pageLang + 置信度 pageConf（复用现有 fastTextLang）。
+    //   2) 逐块纠错：对某块，若其 fastText 置信度 <0.45 且 Apple NL 置信度 <0.45（该块本身低置信），
+    //      且非「硬命中」(blockHardHit：forceWords/变音符/西里尔/后缀硬规则) → 归入 pageLang。
+    //   3) 若 pageConf < 0.4（真正混语页面）→ 整页不纠错，保持逐块原判。
+    // 与旧口径合并说明：
+    //   • 旧「方向3」用「词长≤5 碎词 + 主语种占比≥80%」这种碎词启发式来平滑，属"堆规则"。
+    //     本改动1改为「模型置信度」口径（该块 ft<0.45 且 nl<0.45 才算低置信），是根本解法，
+    //     故删除旧方向3分支，统一为页面级预判。
+    //   • 「方向7 白名单」保留：负责把「落在主语种白名单外的小语种（id/vi/pl…）」强并主语种，
+    //     与改动1职责不同（一个管低置信、一个管越界小语种），互补不冲突。
+    // 置信度回传口径：不改 detectBlockLang 签名（避免大改识别管线），而是在此对每块文本
+    //   旁路调用 fastTextLang / nlDetect 取其置信度（两者均带缓存，OCR 阶段多为命中，开销可控）。
+    func pageLevelCorrect(_ bs: [Block]) -> [Block] {
+        // 收集非数字、非中文块文本（每块取其非数字 token 拼接）
+        let parts: [String] = bs.compactMap { b in
+            if b.lang == "zh" { return nil }   // 中文块（含跳过哨兵）不参与
+            if b.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return nil }
+            let toks = latinTokens(b.text).filter { !isNumericToken($0) }
+            return toks.isEmpty ? nil : toks.joined(separator: " ")
+        }
+        guard parts.count >= 2 else { return bs }        // 行数过少，页面级预判无意义
+        let pageText = parts.joined(separator: " ")
+        guard let pageFt = fastTextLang(pageText), allowedLangCodes.contains(pageFt.code) else { return bs }
+        let pageLang = pageFt.code
+        if pageFt.prob < 0.4 { return bs }               // 真正混语页面 → 不纠错
+        return bs.map { b in
+            guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
+            if b.lang == pageLang { return b }
+            if blockHardHit(b.text) { return b }         // 硬命中豁免
+            let ftP = fastTextLang(b.text)?.prob ?? 0
+            let nlP = nlDetect(b.text)?.prob ?? 0
+            if ftP < 0.45 && nlP < 0.45 {                // 该块本身低置信 → 归页面主语种
+                return Block(text: b.text, box: b.box, lang: pageLang)
+            }
+            return b
+        }
     }
-    let realTotalPre = realCount.values.reduce(0, +)
-    let domShare = (realTotalPre > 0 && domForSmoothing != "und")
-        ? Double(realCount[domForSmoothing] ?? 0) / Double(realTotalPre) : 0
+
+    // 先做页面级纠错（改动1），再进入既有白名单归并（方向7）
+    let pageBlocks = pageLevelCorrect(rawBlocks)
+
+    let domForSmoothing = firstPassDominant(pageBlocks)
     let wl = whitelist(forMain: domForSmoothing)
-    let blocks: [Block] = rawBlocks.map { b in
+    let blocks: [Block] = pageBlocks.map { b in
         // 只处理真实语种 token；und/name/zh(已跳过)/num 保持原样
         guard b.lang != "und" && b.lang != "name" && b.lang != "num" && domForSmoothing != "und"
               && b.lang != domForSmoothing else { return b }
-        // 硬命中豁免：forceWords/变音符独有字符命中 → 保留原判，避免误伤真实混语
+        // 硬命中豁免：forceWords/变音符/西里尔/后缀硬规则命中 → 保留原判，避免误伤真实混语
         if blockHardHit(b.text) { return b }
-        let toks = latinTokens(b.text).filter { !isNumericToken($0) }
-        let isShortFragment = toks.count == 1 && (toks.first?.count ?? 99) <= 5
         // 方向7：语种 ∉ 主语种白名单 → 归主语种
         if let wl = wl, !wl.contains(b.lang) {
-            return Block(text: b.text, box: b.box, lang: domForSmoothing)
-        }
-        // 方向3：主语种占比≥80% 且为可平滑碎词 → 归主语种
-        if domShare >= 0.80 && isShortFragment {
             return Block(text: b.text, box: b.box, lang: domForSmoothing)
         }
         return b
@@ -1675,6 +1763,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var globalClickMonitor: Any?
     // 记录本次截图所在的屏幕，供汇总弹窗 / 标注图窗口定位到同一块屏幕
     var captureScreen: NSScreen?
+    // 第9批·改动3：截图完成后，用「输出图片的真实像素宽高」辅助校正的结果屏。
+    //   本 App 用 screencapture -i（交互框选），图片尺寸=选区大小≠整屏，故不能纯用图片
+    //   宽高反推屏幕；仅当选区恰为某屏整屏（像素宽高 ±10px 命中）时用它校正，否则回退
+    //   captureScreen（热键触发瞬间锁定的鼠标屏）。所有弹窗只用 dialogScreen() 返回值。
+    var resultScreen: NSScreen?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)   // 无 Dock 图标
@@ -1777,6 +1870,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         guard FileManager.default.fileExists(atPath: shotPath) else { return }  // 用户取消
 
+        // ===== 第9批·改动3：用输出图片真实像素宽高辅助校正结果屏 =====
+        //   本 App 是 screencapture -i（交互框选）：图片尺寸=选区大小，通常 ≠ 整屏，
+        //   故「图片宽高=屏幕宽高」不成立，纯图片反推不可用。此处仅做「整屏选区」的辅助校正：
+        //   读图真实像素宽高（用 NSBitmapImageRep.pixelsWide/High，避免 NSImage.size 点单位误差），
+        //   遍历各屏 frame.width*backingScaleFactor / frame.height*backingScaleFactor（像素），
+        //   若某屏与图片像素宽高误差 ±10px 内 → 认定选区即该整屏，用它作 resultScreen；
+        //   否则（普通局部框选）回退到 captureScreen（热键锁定的鼠标屏），绝不跑屏。
+        resultScreen = captureScreen   // 默认：热键锁定屏（最稳）
+        if let img = NSImage(contentsOfFile: shotPath),
+           let rep = img.representations.compactMap({ $0 as? NSBitmapImageRep }).first {
+            let pxW = CGFloat(rep.pixelsWide), pxH = CGFloat(rep.pixelsHigh)
+            if pxW > 0 && pxH > 0 {
+                let tol: CGFloat = 10
+                var best: (screen: NSScreen, diff: CGFloat)? = nil
+                for s in NSScreen.screens {
+                    let sw = s.frame.width * s.backingScaleFactor
+                    let sh = s.frame.height * s.backingScaleFactor
+                    let diff = abs(sw - pxW) + abs(sh - pxH)
+                    if best == nil || diff < best!.diff { best = (s, diff) }
+                }
+                if let b = best, abs(b.screen.frame.width * b.screen.backingScaleFactor - pxW) <= tol,
+                   abs(b.screen.frame.height * b.screen.backingScaleFactor - pxH) <= tol {
+                    resultScreen = b.screen   // 选区恰为整屏 → 用图片像素反推校正
+                }
+                // 非整屏框选：resultScreen 保持 captureScreen（不用尺寸最接近屏，避免误判）
+            }
+        }
+
         // 异步做 OCR，避免卡 UI
         DispatchQueue.global(qos: .userInitiated).async {
             let result = runDetect(shotPath: self.shotPath, annoPath: self.annoPath)
@@ -1847,17 +1968,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    // 找到截图/操作所在的屏幕：优先鼠标当前所在屏幕，fallback 到主屏
-    func targetScreen() -> NSScreen? {
-        let mouse = NSEvent.mouseLocation
-        return NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
-    }
-
-    // 结果弹窗应显示的屏幕：
-    // 热键触发瞬间已在 capture() 入口首行把屏幕锁定到 captureScreen，全程复用，禁止重算。
-    // 这里只返回锁定值，绝不再调用 targetScreen()/重新用鼠标位置计算，避免异步 OCR 回调期间鼠标移动导致跑屏。
+    // 第9批·改动3：结果弹窗应显示的屏幕。
+    //   定位优先级：resultScreen（截图完成后经图片像素校正/回退得到）→ captureScreen
+    //   （热键触发瞬间锁定的鼠标屏）→ 主屏。彻底不再调用 targetScreen()/NSEvent.mouseLocation，
+    //   避免异步 OCR 回调期间鼠标移动导致弹窗跑屏。targetScreen() 已废弃删除。
     func dialogScreen() -> NSScreen? {
-        return captureScreen ?? NSScreen.main ?? NSScreen.screens.first
+        return resultScreen ?? captureScreen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     // 把窗口居中到指定屏幕的可视区域；screen 为空则回退到系统默认居中
