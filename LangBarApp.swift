@@ -391,9 +391,11 @@ let germanForceList: Set<String> = [
     "musikbuch","neuerscheinungen","frühjahr","fruehjahr","herbst",
     "printausgaben","sonderwerbeformen","noten","notenausgabe","klavier","gesang",
     // 德语编辑注释语/常见词（命中即判德语）
-    "herausgegeben","von","metropole","herausgeber","auflage","verlag","band",
+    "herausgegeben","von","metropole","auflage","band",   // herausgeber/verlag 已在上方，去重
     // 第6批：德语词被判英语修复（eco.nova/eco.seminare 品牌靠 seminare；feiern in Tirol 靠 feiern/tirol）
-    "berge","feiern","tirol","seminare"
+    "berge","feiern","tirol","seminare",
+    // 第7批：德语虚词/系动词保护（防被判印尼语等；das/die/der/des/und 已在上方，去重后仅补以下缺失项）
+    "sind","ist","nicht"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -443,16 +445,19 @@ let frenchForceList: Set<String> = [
     "pratique","plein","air","caravanes","passe-partout","partir","famille",
     "balades","balade","stationnement","nouvelles","nouvelle","déjà","deja",
     "surprises","surprise","découverte","decouverte","autour","gratuit","gratuite",
-    "spectacle","spectacles","exposition","expositions","atelier","ateliers",
+    "spectacle","spectacles","exposition","expositions","atelier",   // ateliers 已在上方，去重
     // 法国城市名（命中即判法语，修复被判「英语人名/地名」）
     "bayonne","roubaix","bordeaux","toulouse","marseille","nantes","strasbourg",
     "grenoble","montpellier","rennes","brest","reims","dijon","lyon","nice",
     "lille","nancy","angers","tours","orléans","orleans",
     // 法/意同形词，上下文多为法语（如 HYBRIDE）
     "hybride","hybrides",
-    "mode","actus","statistiques","renversent","litterature","littérature","tech","têtu","tetu","avril","utile","mobilise","printemps","présidentielle","presidentielle","décembre","decembre","contre","pour","lucie","agnès","agnes","jean-baptiste",
+    "mode","actus","statistiques","renversent","litterature","littérature","tech","têtu","tetu","utile","mobilise","printemps","présidentielle","presidentielle","contre","pour","lucie","agnès","agnes","jean-baptiste",   // avril/décembre/decembre 已在上方，去重
     // 第6批：法语识别率补充（含变音符原样小写 + 无变音符 ASCII 变体）
-    "stratégies","strategies","chaleurs","sanglier","munitions","ventes","protégées","protegees","chasseurs"
+    "stratégies","strategies","chaleurs","sanglier","munitions","ventes","protégées","protegees","chasseurs",
+    // 第7批：法语 forceWords 追加（去重后仅补以下缺失项；sanglier/munitions/chaleurs/stratégies/
+    //   strategies/protégées/protegees/chasseurs 已在上方，避免 Set 重复元素编译报错）
+    "séquence","sequence","apaisée","apaisee","désir","desir","postures","jardins","ça","ca"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -855,6 +860,19 @@ let italianAccentChars: Set<Character> = ["à","è","é","ì","ò","ù","À","È
 let frenchOnlyChars: Set<Character> = ["â","ê","î","ô","û","ç","ë","ï","œ","æ",
                                        "Â","Ê","Î","Ô","Û","Ç","Ë","Ï","Œ","Æ"]
 
+// ============================================================
+// MARK: - 第7批·方向6：字符集硬规则（在 fastText/NL 之前生效的字符→语种映射）
+// ============================================================
+// ß/ä/ö/ü→de、ñ/¿/¡→es 已由 germanChars/spanishDistinctChars 在前置链处理（确认保留）。
+// 以下为本批新增：
+//   ã/ê → 倾向葡萄牙语 pt（ê 与法语 circonflexe 冲突，故本集仅收葡语更独有的 ã；
+//         纯 ê 的处理仍交给既有 frenchOnlyChars，避免误伤法语，见下方规则顺序说明）
+let portugueseTendChars: Set<Character> = ["ã","õ","Ã","Õ"]
+//   œ/æ/à/è → 倾向法语 fr（单独 é/É 保持中性，不纳入本集）
+let frenchTendChars: Set<Character> = ["œ","æ","à","è","Œ","Æ","À","È"]
+//   ő/ű → 倾向匈牙利语 hu；App 未支持 hu(不在 allowedLangCodes)，命中则归 und 交后续，不崩
+let hungarianDistinctChars: Set<Character> = ["ő","ű","Ő","Ű"]
+
 // 短词字符特征 → 语种码（confident=true 表示可直接采信）。无明显特征返回 nil。
 // 优先级：德语特殊字符(ä ö ü ß) > 法语专有(â ê î ô û ç) > 意语重音(à è é ì ò ù)。
 func shortWordCharFeature(_ token: String) -> String? {
@@ -1082,9 +1100,12 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     }
     let nonLatinTotal = scriptCount.values.reduce(0, +)
 
-    // ① 无字母（含非拉丁脚本）但有数字 → 数字
+    // ① 无字母（含非拉丁脚本）但有数字 → 数字 token 彻底跳过（第7批·最高优先级）
+    //   返回 "zh" 作为「跳过哨兵」：ocrBlocks 中 guessed=="zh" 会直接 continue，
+    //   于是该 block 不进入 blocks，既不画框、不计入 counts/breakdown、也不进入 total 分母，
+    //   顶部汇总永不出现「数字 X%」。与下方「整块全数字」跳过口径一致。
     if latinLetters == 0 && nonLatinTotal == 0 {
-        if digitCount > 0 { return ("num", true) }
+        if digitCount > 0 { return ("zh", true) }   // 纯数字/年份(如 12/4/2026) → 跳过
         return ("und", false)   // 纯符号
     }
     // ② 非拉丁脚本占主导 → 脚本判定高度可信
@@ -1165,6 +1186,15 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             if tokenLooksIndonesian(one) { return ("id", true) }
             // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
             if tokenLooksSpanish(one) { return ("es", true) }
+            // ===== 第7批·方向6：字符集硬规则（forceWords/既有字符特征之后、fastText/NL 之前）=====
+            //   ä/ö/ü/ß→de、ñ/¿/¡→es 已在前面处理；此处补充本批新增的倾向规则。
+            //   走到这里的 token 未被任何 forceWords/语言特征认领，故不会误伤已认领词。
+            if one.contains(where: { hungarianDistinctChars.contains($0) }) {
+                // ő/ű → 匈牙利语；App 未支持 hu → 归 und 交后续，绝不崩
+                return ("und", false)
+            }
+            if one.contains(where: { portugueseTendChars.contains($0) }) { return ("pt", true) } // ã/õ → 葡
+            if one.contains(where: { frenchTendChars.contains($0) })     { return ("fr", true) } // œ/æ/à/è → 法
             // ===== fastText 主判（在字符特征/forceWords 之后、Apple NL 之前）=====
             //   方向2：≤4 字符短词不单独送 fastText（易误判），改用「前词+当前词+后词」
             //   拼接串作为上下文整体判定；无上下文时退回对该词本身判定。
@@ -1466,10 +1496,82 @@ struct DetectResult {
 
 func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
     guard let cg = loadCGImage(shotPath) else { return nil }
-    let blocks = ocrBlocks(cg)
-    // 占比汇总：包含 专名/数字，排除 未识别
+    let rawBlocks = ocrBlocks(cg)
+
+    // ============================================================
+    // 第7批·方向3(平滑) + 方向7(白名单)：识别主语种后，对碎词/白名单外 token 重新归并
+    // ============================================================
+    // 平滑口径说明（方向3）：当前 Block 未保存 token 级置信度（Vision→detectBlockLang 只回传
+    //   (code, ok)，未透传概率）。为避免大改识别管线，采用任务允许的“退而求其次”口径：
+    //   把「词长≤5 且非 forceWords/非变音符硬命中」的碎词作为可平滑对象。硬命中(forceWords/
+    //   变音符独有字符)一律豁免，避免误伤真实混语。
+    // 白名单（方向7）：主语种确定后，落在白名单外的 token（尤其 id/vi/pl/sw 小语种）改判主语种。
+    func firstPassDominant(_ bs: [Block]) -> String {
+        var c: [String: Int] = [:]
+        for b in bs where b.lang != "und" && b.lang != "num" && b.lang != "name" {
+            c[b.lang, default: 0] += letterCount(b.text)
+        }
+        return c.sorted { $0.value > $1.value }.first?.key ?? "und"
+    }
+    // block 是否为“硬命中”（forceWords 或含某语种独有变音符）→ 豁免平滑/白名单强改
+    func blockHardHit(_ text: String) -> Bool {
+        for tok in latinTokens(text) where !isNumericToken(tok) {
+            let lo = tok.lowercased()
+            if isFrenchForced(tok) || isGermanForced(tok) || isSpanishForced(tok)
+                || isItalianForced(tok) || isPortugueseForced(tok) || isEnglishForced(tok)
+                || isIndonesianForced(tok) || germanStopwords.contains(lo) { return true }
+            if tok.contains(where: { germanChars.contains($0) || spanishDistinctChars.contains($0)
+                || frenchOnlyChars.contains($0) || italianAccentChars.contains($0)
+                || portugueseTendChars.contains($0) || frenchTendChars.contains($0)
+                || hungarianDistinctChars.contains($0) }) { return true }
+        }
+        return false
+    }
+    // 方向7：主语种 → 候选白名单（nil 表示不限制）
+    func whitelist(forMain m: String) -> Set<String>? {
+        switch m {
+        case "de": return ["de","en","fr","nl","da","sv","no"]
+        case "fr": return ["fr","en","it","es","pt"]
+        case "pt": return ["pt","en","es"]
+        case "en": return ["en","de","fr","es","pt","it"]
+        default:   return nil   // 其它主语种：宽松，不加限制
+        }
+    }
+
+    let domForSmoothing = firstPassDominant(rawBlocks)
+    // 计算主语种占比（真实语种，用于方向3 的 ≥80% 判断）
+    var realCount: [String: Int] = [:]
+    for b in rawBlocks where b.lang != "und" && b.lang != "num" && b.lang != "name" {
+        realCount[b.lang, default: 0] += letterCount(b.text)
+    }
+    let realTotalPre = realCount.values.reduce(0, +)
+    let domShare = (realTotalPre > 0 && domForSmoothing != "und")
+        ? Double(realCount[domForSmoothing] ?? 0) / Double(realTotalPre) : 0
+    let wl = whitelist(forMain: domForSmoothing)
+    let blocks: [Block] = rawBlocks.map { b in
+        // 只处理真实语种 token；und/name/zh(已跳过)/num 保持原样
+        guard b.lang != "und" && b.lang != "name" && b.lang != "num" && domForSmoothing != "und"
+              && b.lang != domForSmoothing else { return b }
+        // 硬命中豁免：forceWords/变音符独有字符命中 → 保留原判，避免误伤真实混语
+        if blockHardHit(b.text) { return b }
+        let toks = latinTokens(b.text).filter { !isNumericToken($0) }
+        let isShortFragment = toks.count == 1 && (toks.first?.count ?? 99) <= 5
+        // 方向7：语种 ∉ 主语种白名单 → 归主语种
+        if let wl = wl, !wl.contains(b.lang) {
+            return Block(text: b.text, box: b.box, lang: domForSmoothing)
+        }
+        // 方向3：主语种占比≥80% 且为可平滑碎词 → 归主语种
+        if domShare >= 0.80 && isShortFragment {
+            return Block(text: b.text, box: b.box, lang: domForSmoothing)
+        }
+        return b
+    }
+
+    // 占比汇总：包含 专名；排除 未识别 与 数字(num)。
+    //   第7批：数字 token 早在 detectBlockLang 阶段即以 "zh" 哨兵被 continue 跳过，
+    //   理论上 blocks 不含 "num"；此处仍显式排除 "num"，双保险确保 total 分母与顶部条目都不含数字。
     var counts: [String: Int] = [:]
-    for b in blocks where b.lang != "und" {
+    for b in blocks where b.lang != "und" && b.lang != "num" {
         counts[b.lang, default: 0] += letterCount(b.text)
     }
     let sorted = counts.sorted { $0.value > $1.value }
