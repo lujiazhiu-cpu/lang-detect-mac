@@ -888,6 +888,108 @@ let frenchTendChars: Set<Character> = ["œ","æ","à","è","Œ","Æ","À","È"]
 //   ő/ű → 倾向匈牙利语 hu；App 未支持 hu(不在 allowedLangCodes)，命中则归 und 交后续，不崩
 let hungarianDistinctChars: Set<Character> = ["ő","ű","Ő","Ű"]
 
+// ============================================================
+// MARK: - 第10批·改动A：葡语专属重音锁定（页面主语种预判阶段使用）
+// ============================================================
+// 葡语高区分度重音字符：ê ã ç õ â ô（西语几乎不用——西语专有只有 ñ á é í ó ú）。
+//   规则（用户明确要求，不额外加护栏）：只要全页任一 token 含以下任意字符，且页面主语种
+//   pageLang ∈ {es, fr}，即在页面预判阶段强制把 pageLang 覆盖为 pt（优先级高于 fastText
+//   的页面级判断）。
+// ⚠️ 已知重叠风险：ç 在法语中也很常见（garçon/français 等），â/ô 亦为法语 circonflexe；
+//   因此本规则可能把「真法语页面」误锁成 pt。此处遵从用户指令按规则实现，不加法语护栏。
+//   （逐块级仍有 frenchOnlyChars / frenchTendChars 等既有规则保护单块判定，本覆盖只作用于
+//    页面主语种 pageLang，用于低置信行纠错的归并目标。）
+// 大小写均纳入，便于全大写 OCR 文本命中。
+let portugueseLockChars: Set<Character> = ["ê","ã","ç","õ","â","ô",
+                                           "Ê","Ã","Ç","Õ","Â","Ô"]
+
+// ============================================================
+// MARK: - 第11批·改动C：德语专属字符硬锁页面主语种
+// ============================================================
+// 德语高区分度字符：ä ö ü ß（含大写，ß 无大写但保留兼容）。只要全页任一 token 含以下任意
+//   字符 → 强制把 pageLang 覆盖为 de。优先级高于 fastText 页面判断，与葡语锁定（改动A）同级。
+// ⚠️ 冲突规则（用户明确）：若同页既满足德语锁定又满足葡语锁定（例如既有 ß 又有 ã）→ 德语优先
+//   （德语变音符 ä/ö/ü/ß 比葡语 ç/â/ô 更唯一）。实现上把德语锁定判断放在葡语锁定「之前」，
+//    并用 if/else 保证 de 覆盖胜出（葡语锁定仅在 pageLang∈{es,fr} 时触发，德语已改为 de 后即绕过）。
+let germanLockChars: Set<Character> = ["ä","ö","ü","Ä","Ö","Ü","ß"]
+
+// ============================================================
+// MARK: - 第11批·改动D：德语高频功能词加权页面主语种
+// ============================================================
+// 补充改动C：处理「无变音符」的德语页面（如 POSTMODERNE DENKMAL BIRKHÄUSER 中若无 Ä 时）。
+//   C 是「字符级铁证」（变音符唯一），D 是「词汇级信号」（功能词命中），D 覆盖 C 无法命中的无变音符情形。
+// 合并功能词 + 动词/介词为同一 Set（小写，token 精确匹配、不区分大小写）。
+//   注意：für 含 ü，本身也会触发改动C；das/die/der 等已在 germanForceList，不冲突。
+let germanFunctionWords: Set<String> = [
+    // 冠词/功能词
+    "und","der","die","das","des","dem","den","ein","eine","einen","eines","einer",
+    // 动词/介词/副词
+    "ist","sind","von","mit","für","fur","auf","bei","oder","nach","nicht","sich","auch","an","im","zu","wie"
+]
+
+// ============================================================
+// MARK: - 第10批·改动B：纯 ASCII 拉丁行判定（用于硬排除非拉丁语种误判）
+// ============================================================
+// 判定「一行/块」是否为纯 ASCII 拉丁行：不含任何 CJK/假名/韩文/阿拉伯/希伯来/泰文/西里尔字符，
+//   且至少含一个 ASCII 字母（a–z / A–Z）。用于纠正「全 ASCII 行被判成 ja/ko/ar/he/th 等
+//   完全不含拉丁字母的语种」这类字符集级错误（如 "LET'S GO!" 被判 ja）。
+//   注意：真正的 ja/ko/ar 文本必含非拉丁字符 → 落入下列区间 → 返回 false，绝不误伤真实 CJK 块。
+func isPureAsciiLatinLine(_ text: String) -> Bool {
+    var hasAsciiLetter = false
+    for s in text.unicodeScalars {
+        let v = s.value
+        // 落在任一非拉丁脚本区间 → 立即判非纯 ASCII 拉丁行
+        if (0x4E00...0x9FFF).contains(v) || (0x3400...0x4DBF).contains(v)     // CJK 汉字
+            || (0x3040...0x30FF).contains(v)                                  // 日文假名
+            || (0xAC00...0xD7AF).contains(v) || (0x1100...0x11FF).contains(v)
+            || (0x3130...0x318F).contains(v)                                  // 韩文
+            || (0x0600...0x06FF).contains(v) || (0x0750...0x077F).contains(v)
+            || (0x08A0...0x08FF).contains(v) || (0xFB50...0xFDFF).contains(v)
+            || (0xFE70...0xFEFF).contains(v)                                  // 阿拉伯文
+            || (0x0590...0x05FF).contains(v) || (0xFB1D...0xFB4F).contains(v) // 希伯来文
+            || (0x0E00...0x0E7F).contains(v)                                  // 泰文
+            || (0x0400...0x04FF).contains(v) {                                // 西里尔文
+            return false
+        }
+        // ASCII 字母存在性（a–z / A–Z）
+        if (0x41...0x5A).contains(v) || (0x61...0x7A).contains(v) { hasAsciiLetter = true }
+    }
+    return hasAsciiLetter
+}
+
+// ============================================================
+// MARK: - 第11批·改动E：Apple NL 人名/地名 token 剔除
+// ============================================================
+// 用 NLTagger(.nameType) 判断某 token 是否为人名(.personalName)或地名(.placeName)。
+//   命中者应「从统计中完全剔除」：不画框、不计入任何语种百分比、也不计入 und（不影响 total）。
+// 与既有专名逻辑（isProperNounLike / properNounForce*）的协调：
+//   • 既有逻辑把「疑似专名」归入 name 语种类别（仍计入 breakdown 展示，但不算真实语种）。
+//   • 改动E 更进一步——NL 确认的人名/地名直接从统计剔除，不再进入语种统计，避免与 name 重复计数。
+//   • 顺序上：先用 NL nameType 剔除；剔除后的 token 才进入既有识别管线（含 name 归类）。
+// ⚠️ 运行时依赖：NLTagger 仅真机(macOS/NL 框架)可用；容器无 NL。风险：NL nameType 在非英语
+//   输入准确率低，最坏「少标一行」，用户已确认可接受。为避免误剔大量正文，仅按「token 级」剔除
+//   （单 token 判定），调用方对「整行 token 全部命中人名/地名」时才整行跳过。
+// token 首尾修剪标点集（与 latinTokens 的 trim 集一致），用于改动E token 剥离。
+let _NAME_TRIM_PUNCT = ".,:;!?\"'()[]{}·—-"
+func isPersonOrPlaceName(_ token: String) -> Bool {
+    // 空/纯数字/过短 token 不判（降低误剔风险）
+    let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
+    if t.isEmpty || isNumericToken(t) || t.count < 2 { return false }
+    let tagger = NLTagger(tagSchemes: [.nameType])
+    tagger.string = t
+    var hit = false
+    let opts: NLTagger.Options = [.omitWhitespace, .omitPunctuation, .joinNames]
+    tagger.enumerateTags(in: t.startIndex..<t.endIndex, unit: .word,
+                         scheme: .nameType, options: opts) { tag, _ in
+        if let tag = tag, tag == .personalName || tag == .placeName {
+            hit = true
+            return false   // 命中即停止
+        }
+        return true
+    }
+    return hit
+}
+
 // 短词字符特征 → 语种码（confident=true 表示可直接采信）。无明显特征返回 nil。
 // 优先级：德语特殊字符(ä ö ü ß) > 法语专有(â ê î ô û ç) > 意语重音(à è é ì ò ù)。
 func shortWordCharFeature(_ token: String) -> String? {
@@ -1401,12 +1503,29 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
                 guard let cand = o.topCandidates(1).first else { continue }
                 let s = cand.string
                 if s.isEmpty { continue }
+                // ---- 第11批·改动E：Apple NL 人名/地名 token 级剔除（在识别管线「之前」）----
+                //   对本块每个 token 用 NLTagger(.nameType) 判定；命中人名/地名者从统计中完全剔除
+                //   （不画框、不计入任何语种、也不计入 und）。剔除后剩余 token 才进入识别管线。
+                //   • 整行 token 全部命中人名/地名 → keptToks 为空 → 整行跳过（类似数字块 continue，
+                //     语义是「忽略」——不进入 blocks，故不影响 total）。
+                //   • 与既有专名逻辑（isProperNounLike→name 类别）协调：先 NL 剔除，剔除后的 token
+                //     才可能被后续判成 name，避免重复计数。NL 仅真机可用，容器无 NL 时该函数不命中。
+                let rawToks = s.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+                var keptToks: [Substring] = []
+                for tok in rawToks {
+                    let core = tok.trimmingCharacters(in: CharacterSet(charactersIn: _NAME_TRIM_PUNCT))
+                    if !core.isEmpty && isPersonOrPlaceName(core) { continue }   // NL 人名/地名 → 剔除
+                    keptToks.append(tok)
+                }
+                if keptToks.isEmpty { continue }                 // 整行仅人名/地名 → 整行忽略
+                // 若有 token 被剔除，用剩余 token 重组文本；否则沿用原文（保留原始间隔语义）
+                let s2 = keptToks.count == rawToks.count ? s : keptToks.joined(separator: " ")
                 // 相邻 block 文本（跳过空串）作为前/后上下文
                 let prevCtx = i > 0 ? texts[..<i].last(where: { !$0.isEmpty }) : nil
                 let nextCtx = i + 1 < texts.count ? texts[(i+1)...].first(where: { !$0.isEmpty }) : nil
                 // 判定语种可信度
                 var lang: String
-                let (guessed, ok) = detectBlockLang(s, prevContext: prevCtx, nextContext: nextCtx)
+                let (guessed, ok) = detectBlockLang(s2, prevContext: prevCtx, nextContext: nextCtx)
                 // 中文片段：直接跳过，不识别、不标注、不计入统计
                 if guessed == "zh" { continue }
                 // 三重不猜条件：OCR置信度低 / 文字太小 / 语种判定不可信
@@ -1417,7 +1536,7 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
                 } else {
                     lang = guessed
                 }
-                blocks.append(Block(text: s, box: o.boundingBox, lang: lang))
+                blocks.append(Block(text: s2, box: o.boundingBox, lang: lang))
             }
         }
         sem.signal()
@@ -1642,22 +1761,105 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
             let toks = latinTokens(b.text).filter { !isNumericToken($0) }
             return toks.isEmpty ? nil : toks.joined(separator: " ")
         }
-        guard parts.count >= 2 else { return bs }        // 行数过少，页面级预判无意义
-        let pageText = parts.joined(separator: " ")
-        guard let pageFt = fastTextLang(pageText), allowedLangCodes.contains(pageFt.code) else { return bs }
-        let pageLang = pageFt.code
-        if pageFt.prob < 0.4 { return bs }               // 真正混语页面 → 不纠错
-        return bs.map { b in
-            guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
-            if b.lang == pageLang { return b }
-            if blockHardHit(b.text) { return b }         // 硬命中豁免
-            let ftP = fastTextLang(b.text)?.prob ?? 0
-            let nlP = nlDetect(b.text)?.prob ?? 0
-            if ftP < 0.45 && nlP < 0.45 {                // 该块本身低置信 → 归页面主语种
-                return Block(text: b.text, box: b.box, lang: pageLang)
+        // 页面主语种 + 置信度：行数过少 / fastText 不可用时置为「未知」（pageLang=nil），
+        //   此时跳过「改动1 低置信行纠错」与「改动A 葡语锁定」，但仍需执行「改动B 纯拉丁行硬排除」。
+        var pageLang: String? = nil
+        var pageConf: Double = 0
+        if parts.count >= 2 {
+            let pageText = parts.joined(separator: " ")
+            if let pageFt = fastTextLang(pageText), allowedLangCodes.contains(pageFt.code) {
+                pageLang = pageFt.code
+                pageConf = pageFt.prob
             }
-            return b
         }
+
+        // ---- 第11批·改动C：德语专属字符硬锁（放在葡语锁定「之前」，保证德语优先）----
+        //   全页任一 token 含 germanLockChars(ä/ö/ü/ß) → 强制 pageLang 覆盖为 de。
+        //   优先级高于 fastText，与葡语锁定同级；此处先执行 → 若命中 de，后面葡语锁定因
+        //   pageLang 已非 {es,fr} 而自动绕过 → 实现「同页既有 ß 又有 ã 时德语优先」的冲突规则。
+        let hasDeLock = bs.contains { b in
+            b.text.contains { germanLockChars.contains($0) }
+        }
+        if hasDeLock {
+            pageLang = "de"                              // 德语字符级铁证，覆盖任何 fastText 判断
+        }
+
+        // ---- 第11批·改动D：德语高频功能词加权（词汇级信号，覆盖无变音符的德语页面）----
+        //   统计全页 token 精确命中 germanFunctionWords 的次数 deHits（lowercase 精确匹配）。
+        //   C 是字符级铁证，D 是词汇级信号；D 处理 C 无法命中（无变音符）的情形，如 "und der die"。
+        var deHits = 0
+        for b in bs {
+            for tok in latinTokens(b.text) where !isNumericToken(tok) {
+                if germanFunctionWords.contains(tok.lowercased()) { deHits += 1 }
+            }
+        }
+        //   deHits≥2 且 pageLang != de → 覆盖为 de（德语功能词密集出现，几乎必为德语页面）。
+        //   deHits==1 时不在此覆盖，仅作为下方「低置信行纠错」的加权信号（见改动D-2）。
+        if deHits >= 2 && pageLang != "de" {
+            pageLang = "de"
+        }
+
+        // ---- 第10批·改动A：葡语专属重音锁定（在 pageLang 确定后、用于纠错之前立即执行）----
+        //   扫描全页所有 OCR 块字符，若任一块含 portugueseLockChars(ê/ã/ç/õ/â/ô)，且当前
+        //   pageLang ∈ {es, fr} → 强制覆盖为 pt。优先级高于 fastText 的页面级判断。
+        //   pageLang 已是 pt / 其它语种 / nil 时不改（按用户规则仅拦截 es/fr）。
+        if let pl = pageLang, pl == "es" || pl == "fr" {
+            let hasPtLock = bs.contains { b in
+                b.text.contains { portugueseLockChars.contains($0) }
+            }
+            if hasPtLock { pageLang = "pt" }             // 葡语重音锁定，覆盖 es/fr
+        }
+
+        // ---- 第9批·改动1：页面级低置信行纠错（仅当 pageLang 已知且 pageConf≥0.4）----
+        var result = bs
+        if let pl = pageLang, pageConf >= 0.4 {          // pageConf<0.4：真正混语页面 → 不纠错
+            result = bs.map { b in
+                guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
+                if b.lang == pl { return b }
+                if blockHardHit(b.text) { return b }     // 硬命中豁免
+                let ftP = fastTextLang(b.text)?.prob ?? 0
+                let nlP = nlDetect(b.text)?.prob ?? 0
+                if ftP < 0.45 && nlP < 0.45 {            // 该块本身低置信 → 归页面主语种
+                    return Block(text: b.text, box: b.box, lang: pl)
+                }
+                return b
+            }
+        }
+
+        // ---- 第11批·改动D-2：deHits==1 加权（词汇级弱信号，仅在低置信行纠错阶段生效）----
+        //   当全页恰有 1 个德语功能词命中（不足以直接覆盖 pageLang），把它作为加权信号：
+        //   对某行，若其 fastText 结果为 en 且置信度 <0.55（英语判定不牢靠）→ 改判 de。
+        //   复用改动1旁路取 fastText 结果/置信度的方式（fastTextLang 带缓存，开销可控）。
+        //   硬命中行豁免；name/zh/num 不动。与改动C(字符铁证)关系：C 命中即已锁 de 不进此分支。
+        if deHits == 1 {
+            result = result.map { b in
+                guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
+                if b.lang == "de" { return b }
+                if blockHardHit(b.text) { return b }
+                if let ft = fastTextLang(b.text), ft.code == "en", ft.prob < 0.55 {
+                    return Block(text: b.text, box: b.box, lang: "de")
+                }
+                return b
+            }
+        }
+
+        // ---- 第10批·改动B：纯 ASCII 拉丁行 硬排除非拉丁语种（在最终判定确定后执行）----
+        //   若某块被判成完全不含拉丁字母的语种 {ja,ko,ar,he,th,id}，但其文本是「纯 ASCII 拉丁行」
+        //   （无任何 CJK/假名/韩文/阿拉伯/希伯来/泰文/西里尔字符），则属字符集级错误，直接覆盖：
+        //     • 优先归入页面主语种 pageLang（且 pageConf≥0.4）；
+        //     • 否则（pageLang 未知或 pageConf<0.4）→ 归入英语 en。
+        //   注意：把拉丁行判成 ja 本身即错误，故此处不适用「硬命中豁免」——正常拉丁行也不会硬命中
+        //   ja/ko 等，直接对最终语种做覆盖即可。真实 CJK/阿拉伯等文本含非拉丁字符 → isPureAsciiLatinLine
+        //   返回 false → 不受影响。与 und/白名单/后缀规则不冲突（针对不同错误类型，可叠加）。
+        let nonLatinLangs: Set<String> = ["ja", "ko", "ar", "he", "th", "id"]
+        result = result.map { b in
+            guard nonLatinLangs.contains(b.lang), isPureAsciiLatinLine(b.text) else { return b }
+            if let pl = pageLang, pageConf >= 0.4 {
+                return Block(text: b.text, box: b.box, lang: pl)
+            }
+            return Block(text: b.text, box: b.box, lang: "en")
+        }
+        return result
     }
 
     // 先做页面级纠错（改动1），再进入既有白名单归并（方向7）
