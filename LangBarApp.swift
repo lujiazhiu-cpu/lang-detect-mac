@@ -391,13 +391,18 @@ let germanForceList: Set<String> = [
     "musikbuch","neuerscheinungen","frühjahr","fruehjahr","herbst",
     "printausgaben","sonderwerbeformen","noten","notenausgabe","klavier","gesang",
     // 德语编辑注释语/常见词（命中即判德语）
-    "herausgegeben","von","metropole","herausgeber","auflage","verlag","band"
+    "herausgegeben","von","metropole","herausgeber","auflage","verlag","band",
+    // 第6批：德语词被判英语修复（eco.nova/eco.seminare 品牌靠 seminare；feiern in Tirol 靠 feiern/tirol）
+    "berge","feiern","tirol","seminare"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
 // 法语特征字符 / 高频词（含省音 l' d' 处理）
-let frenchChars: Set<Character> = ["é","è","ê","ë","î","ï","ô","œ","æ","à","â","ù","û","ç",
-                                   "É","È","Ê","Ë","Î","Ï","Ô","Œ","À","Â","Ù","Û","Ç"]
+// 第6批：把 é/É 从「法语独有」触发集中移除——葡语/西语也大量使用 é/É，
+// 单独的 é/É 不能作为「法语 vs 葡/西」判据（否则 CAZÉTV 仅因 É 被误判法语）。
+// 保留 è ê ë î ï ô œ æ à â ù û ç 等真正法语倾向字符；é/É 改为中性，交给 fastText/forceWords 判。
+let frenchChars: Set<Character> = ["è","ê","ë","î","ï","ô","œ","æ","à","â","ù","û","ç",
+                                   "È","Ê","Ë","Î","Ï","Ô","Œ","À","Â","Ù","Û","Ç"]
 let frenchStopwords: Set<String> = [
     "le","la","les","un","une","des","du","de","au","aux","et","ou","sur","tout","tous",
     "toute","pour","dans","avec","par","sans","chez","vers","ce","cette","qui","que",
@@ -445,7 +450,9 @@ let frenchForceList: Set<String> = [
     "lille","nancy","angers","tours","orléans","orleans",
     // 法/意同形词，上下文多为法语（如 HYBRIDE）
     "hybride","hybrides",
-    "mode","actus","statistiques","renversent","litterature","littérature","tech","têtu","tetu","avril","utile","mobilise","printemps","présidentielle","presidentielle","décembre","decembre","contre","pour","lucie","agnès","agnes","jean-baptiste"
+    "mode","actus","statistiques","renversent","litterature","littérature","tech","têtu","tetu","avril","utile","mobilise","printemps","présidentielle","presidentielle","décembre","decembre","contre","pour","lucie","agnès","agnes","jean-baptiste",
+    // 第6批：法语识别率补充（含变音符原样小写 + 无变音符 ASCII 变体）
+    "stratégies","strategies","chaleurs","sanglier","munitions","ventes","protégées","protegees","chasseurs"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -588,7 +595,12 @@ let portugueseStopwords: Set<String> = [
 let portugueseForceList: Set<String> = [
     "aniversário","aniversario","janeiro","fevereiro","março","marco","abril","maio",
     "junho","julho","agosto","setembro","outubro","novembro","dezembro","dez",
-    "coração","informação","edição"
+    "coração","informação","edição",
+    // 第6批：葡语识别率补充
+    "copa","virada","futebol","esporte",   // 葡语特征较强，必加
+    "uma",                                  // 常见葡语词，加入
+    // 以下为弱信号（也可能是英语/通用词），加入但降低副作用风险，标注为弱信号：
+    "era","nova","digital"
 ]
 func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
 let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
@@ -1168,6 +1180,17 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             }()
             if let ft = fastTextLang(ftInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
                allowedLangCodes.contains(ft.code) {
+                // 第6批（低优先级）：极小字碎词乱判小语种防护。
+                //   当 token 为纯 ASCII 且无变音符、词长 ≤5、且置信度 <0.5，而 fastText 又输出了
+                //   越南语/印尼语/波兰语/克罗地亚语等小语种时，不采信小语种：优先归英语
+                //   （若含德语特征线索则德语）。放在小语种输出之后、返回之前。
+                //   注意：此处未被 forceWords/字符特征命中（前面已 return），故不会影响那些已认领的词。
+                let smallLangs: Set<String> = ["vi","id","pl","hr","cs","sk","sl","ro","hu","tr","nl","da","sv","no","fi"]
+                let noDiacritic = one.unicodeScalars.allSatisfy { $0.isASCII }
+                if smallLangs.contains(ft.code) && ft.prob < 0.5 && noDiacritic && one.count <= 5 {
+                    if tokenLooksGerman(one) || isGermanForced(one) { return ("de", true) }
+                    return ("en", true)
+                }
                 return (ft.code, true)
             }
             // 任务A：纯 ASCII ≤3 短词且 NL 置信度低 → 不强判，先试 fastText，仍不可信则归 und
@@ -1592,6 +1615,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc func capture() {
+        // 热键触发瞬间锁定屏幕，全程复用，禁止重算：
+        // 在进入任何截图逻辑之前，第一行就用鼠标当前所在屏幕锁定 captureScreen，
+        // 之后所有弹窗（汇总弹窗 / 标注图窗口）都只用这个锁定值，避免异步回调期间鼠标移动导致弹窗跑屏。
+        self.captureScreen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) ?? NSScreen.main
         // 先检查屏幕录制权限：未授权则用我们自己的弹窗，直接跳「屏幕录制」设置页
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()   // 触发系统登记本 App 到列表
@@ -1610,8 +1637,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try? FileManager.default.removeItem(atPath: shotPath)
         try? FileManager.default.removeItem(atPath: annoPath)
 
-        // 在截图进程启动前先记录屏幕，避免截图拖动结束后鼠标移到另一块屏幕
-        self.captureScreen = self.targetScreen()
+        // 屏幕已在 capture() 入口首行锁定（captureScreen），此处不再重算，避免跑屏。
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -1697,13 +1723,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
     }
 
-    // 结果弹窗应显示的屏幕（任务4 额外防护）：
-    // 截图时记录了 captureScreen；但弹窗真正出现时（异步 OCR 之后）用户/鼠标可能已在另一块屏。
-    // 这里在弹窗前重新取鼠标当前所在屏幕(live)，优先用 live，退回 captureScreen，再退回主屏。
-    // 这样即便 captureScreen 记录到了小屏、而用户此刻在大屏，弹窗也会跟到用户眼前。
+    // 结果弹窗应显示的屏幕：
+    // 热键触发瞬间已在 capture() 入口首行把屏幕锁定到 captureScreen，全程复用，禁止重算。
+    // 这里只返回锁定值，绝不再调用 targetScreen()/重新用鼠标位置计算，避免异步 OCR 回调期间鼠标移动导致跑屏。
     func dialogScreen() -> NSScreen? {
-        let live = targetScreen()
-        return live ?? captureScreen ?? NSScreen.main ?? NSScreen.screens.first
+        return captureScreen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     // 把窗口居中到指定屏幕的可视区域；screen 为空则回退到系统默认居中
