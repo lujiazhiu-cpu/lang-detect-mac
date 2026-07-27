@@ -31,6 +31,7 @@ let langCN: [String: String] = [
     "it": "意大利语", "pt": "葡萄牙语", "vi": "越南语", "id": "印尼语",
     "ja": "日语", "ko": "韩语", "th": "泰语", "ar": "阿拉伯语",
     "de": "德语", "fr": "法语", "en": "英语", "pl": "波兰语", "es": "西班牙语",
+    "ru": "俄语",
     "zh": "中文",
     "name": "英语（人名/地名）", "num": "数字", "und": "未识别"
 ]
@@ -43,6 +44,8 @@ let langColor: [String: NSColor] = [
     "es": NSColor(calibratedRed: 0.95, green: 0.35, blue: 0.10, alpha: 1.0),
     "vi": .systemPink, "id": .systemIndigo, "ja": .systemRed,
     "ko": .magenta, "th": .brown, "ar": .darkGray,
+    // 俄语：暗红棕色，与 ja(红)/th(棕)/ar(深灰) 区分
+    "ru": NSColor(calibratedRed: 0.55, green: 0.27, blue: 0.07, alpha: 1.0),
     "zh": .orange,
     "name": .systemGreen, "num": .systemYellow, "und": .gray
 ]
@@ -59,13 +62,15 @@ let targetLangs: [NLLanguage] = [
 // （如荷兰语 nl / 斯洛伐克语 sk），凡不在此集合内的结果一律不采信，避免误判。
 let allowedLangCodes: Set<String> = [
     "it", "pt", "vi", "id", "ja", "ko", "th", "ar",
-    "de", "fr", "en", "pl", "es", "zh"
+    "de", "fr", "en", "pl", "es", "ru", "zh"
 ]
 
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
 let OCR_CONFIDENCE_MIN: Float = 0.30       // Vision OCR 单块置信度下限
 let NL_PROB_MIN: Double = 0.55             // NaturalLanguage 语种概率下限（拉丁语系）
 let MIN_TEXT_HEIGHT_RATIO: CGFloat = 0.008 // 文字太小（相对整图高度）判为未识别
+// 第8批·最高：未识别兜底阈值 —— fastText 与 Apple NL 置信度均低于此值 → 判 und（不强归任何语种）
+let UND_MIN_CONF: Double = 0.2
 
 // ============================================================
 // MARK: - 脚本归类 + 语种判定
@@ -427,7 +432,7 @@ func tokenLooksFrench(_ token: String) -> Bool {
     if frenchStopwords.contains(stripElision(token.lowercased())) { return true }
     let lowerF = stripElision(token.lowercased())
     if lowerF.count >= 6 {
-        for suf in ["tion","sion","ique","aine","esse","eur","euse","ité","ais","aise"] where lowerF.hasSuffix(suf) { return true }
+        for suf in ["tion","sion","ique","aine","esse","eur","euse","ité","ais","aise","iste"] where lowerF.hasSuffix(suf) { return true }
     }
     return false
 }
@@ -457,7 +462,11 @@ let frenchForceList: Set<String> = [
     "stratégies","strategies","chaleurs","sanglier","munitions","ventes","protégées","protegees","chasseurs",
     // 第7批：法语 forceWords 追加（去重后仅补以下缺失项；sanglier/munitions/chaleurs/stratégies/
     //   strategies/protégées/protegees/chasseurs 已在上方，避免 Set 重复元素编译报错）
-    "séquence","sequence","apaisée","apaisee","désir","desir","postures","jardins","ça","ca"
+    "séquence","sequence","apaisée","apaisee","désir","desir","postures","jardins","ça","ca",
+    // 第8批：法语识别率补充（去重后仅补以下缺失项）
+    //   ⚠ le/les/la/des/du/sur/dans 等短冠词/介词也可能是英/德碎片，加入前已跑测试确认无退化。
+    "entretien","épargne","epargne","coach","coachs","le","les","la","des","du","nos","dans",
+    "sur","economiste","économiste"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -964,6 +973,7 @@ func ftLabelToCode(_ label: String) -> String? {
     case "hrv": return "hr"
     case "vie": return "vi"
     case "ind": return "id"
+    case "rus": return "ru"
     case "jpn": return "ja"
     case "kor": return "ko"
     case "tha": return "th"
@@ -1099,6 +1109,14 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
         else { scriptCount["zh", default: 0] += han }
     }
     let nonLatinTotal = scriptCount.values.reduce(0, +)
+
+    // ===== 第8批·最高：西里尔字母 → 强制俄语（字符集硬规则，先于一切拉丁/数字判定）=====
+    //   token 含 U+0400–U+04FF 任一字符即判俄语 ru，属"硬命中"，优先级与 ä/ö/ü、ñ 同级，
+    //   在 fastText / Apple NL 之前。注意：CharacterSet.letters 会把西里尔计入 latinLetters，
+    //   故必须在使用 latinLetters 做分支判断前先在此拦截。
+    if t.unicodeScalars.contains(where: { (0x0400...0x04FF).contains($0.value) }) {
+        return ("ru", true)
+    }
 
     // ① 无字母（含非拉丁脚本）但有数字 → 数字 token 彻底跳过（第7批·最高优先级）
     //   返回 "zh" 作为「跳过哨兵」：ocrBlocks 中 guessed=="zh" 会直接 continue，
@@ -1286,6 +1304,11 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_PRIMARY_PROB, allowedLangCodes.contains(ft.code) {
         return (ft.code, true)
     }
+    // 第8批·最高：未识别兜底 —— fastText 与 Apple NL 置信度均 < UND_MIN_CONF(0.2)（或都不可用）
+    //   → 不强归任何语种，返回 und（灰色显示、顶部按"未识别 X%"统计，区别于数字跳过）。
+    let ftLow = fastTextLang(nlInput)?.prob ?? 0
+    let nlLow = nlDetect(nlInput)?.prob ?? 0
+    if ftLow < UND_MIN_CONF && nlLow < UND_MIN_CONF { return ("und", false) }
     let r2 = NLLanguageRecognizer()
     r2.languageConstraints = targetLangs
     r2.processString(nlInput)
@@ -1575,6 +1598,11 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         counts[b.lang, default: 0] += letterCount(b.text)
     }
     let sorted = counts.sorted { $0.value > $1.value }
+    // 第8批·最高：未识别(und) 需在顶部按"未识别 X%"统计并以灰色显示（区别于数字跳过：数字不显示）。
+    //   仅用于展示的 breakdown：在真实语种之后追加 und 条目；不影响 mainLang/mixed 的真实语种判断。
+    let undCount = blocks.filter { $0.lang == "und" }.reduce(0) { $0 + letterCount($1.text) }
+    var displayBreakdown = sorted
+    if undCount > 0 { displayBreakdown.append(("und", undCount)) }
     // 主体语种 / 混语：仅按"真实语种"判断（排除 name/num/und）
     let realLangs = sorted.filter { $0.key != "name" && $0.key != "num" }
     let mainLang = realLangs.first?.key ?? (sorted.first?.key ?? "und")
@@ -1602,7 +1630,7 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         mostlyChinese = true
         singleDominant = false
     }
-    annotate(cg, blocks: blocks, breakdown: sorted, mixed: mixed,
+    annotate(cg, blocks: blocks, breakdown: displayBreakdown, mixed: mixed,
              singleDominant: singleDominant, dominantLang: dominantLang, outPath: annoPath)
     let textLen = blocks.map { $0.text }.joined().trimmingCharacters(in: .whitespacesAndNewlines).count
     return DetectResult(mainLang: mainLang, mixed: mixed, breakdown: sorted,
