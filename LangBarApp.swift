@@ -2120,7 +2120,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         //   遍历各屏 frame.width*backingScaleFactor / frame.height*backingScaleFactor（像素），
         //   若某屏与图片像素宽高误差 ±10px 内 → 认定选区即该整屏，用它作 resultScreen；
         //   否则（普通局部框选）回退到 captureScreen（热键锁定的鼠标屏），绝不跑屏。
-        resultScreen = captureScreen   // 默认：热键锁定屏（最稳）
+        // 修复（多屏跑屏）：以「交互框选完成瞬间」鼠标所在屏为准——用户拖拽结束时光标必落在
+        //   截图那块屏上，故它准确反映「截图发生的屏幕」；而 captureScreen 是热键触发瞬间锁定的
+        //   鼠标屏，若截图前鼠标停在别的屏就会导致弹窗跑到那块屏。取不到时回退 captureScreen。
+        let selectionScreen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+        resultScreen = selectionScreen ?? captureScreen   // 默认：选区完成屏；回退热键锁定屏
         if let img = NSImage(contentsOfFile: shotPath),
            let rep = img.representations.compactMap({ $0 as? NSBitmapImageRep }).first {
             let pxW = CGFloat(rep.pixelsWide), pxH = CGFloat(rep.pixelsHigh)
