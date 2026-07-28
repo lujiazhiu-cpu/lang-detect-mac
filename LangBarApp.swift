@@ -472,7 +472,14 @@ let frenchForceList: Set<String> = [
     // 第8批：法语识别率补充（去重后仅补以下缺失项）
     //   ⚠ le/les/la/des/du/sur/dans 等短冠词/介词也可能是英/德碎片，加入前已跑测试确认无退化。
     "entretien","épargne","epargne","coach","coachs","le","les","la","des","du","nos","dans",
+<<<<<<< ours
     "sur","economiste","économiste"
+=======
+    "sur","economiste","économiste",
+    // starling/lingua 离线校准补丁（无凭证方案）：états 去数字后为单 token，
+    //   历史误判意语(single:italian-feature)，lingua 判法语置信 0.99 → 强制法语
+    "états","etats"
+>>>>>>> theirs
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
