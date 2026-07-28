@@ -78,7 +78,10 @@ def offline_detect(token):
     return None
 
 
-def load_tokens(path):
+def load_tokens(path, cases=None):
+    if cases:
+        with open(cases, encoding="utf-8") as f:
+            return json.load(f)
     if path:
         with open(path, encoding="utf-8") as f:
             return [{"token": l.strip(), "expected": None, "desc": ""}
@@ -90,11 +93,12 @@ def load_tokens(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tokens", default=None)
+    ap.add_argument("--cases", default=None, help="独立标注样本集 JSON")
     ap.add_argument("--min-conf", type=float, default=0.60)
     ap.add_argument("--out", default="local_calibration_report.json")
     args = ap.parse_args()
 
-    cases = load_tokens(args.tokens)
+    cases = load_tokens(args.tokens, args.cases)
     rows, patch = [], {}
     n_off_ok = n_ref_ok = n_exp = 0
     for c in cases:

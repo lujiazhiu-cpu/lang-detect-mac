@@ -65,6 +65,13 @@ let allowedLangCodes: Set<String> = [
     "de", "fr", "en", "pl", "es", "ru", "zh"
 ]
 
+// 语种黑名单：明确不需要识别的语种（挪威语：书面挪威 nb / 新挪威 nn / 通用 no）。
+//   命中即判「未识别」und，阻断回退到次优白名单语种（如被误判成德语/英语）造成的错判。
+let blacklistLangCodes: Set<String> = ["no", "nb", "nn"]
+// 黑名单拦截阈值：fastText/NL 首选为挪威语且概率 ≥ 此值、且文本足够长时才拦，避免短词误伤。
+let BLACKLIST_MIN_PROB: Double = 0.60
+let BLACKLIST_MIN_LETTERS: Int = 8
+
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
 let OCR_CONFIDENCE_MIN: Float = 0.30       // Vision OCR 单块置信度下限
 let NL_PROB_MIN: Double = 0.55             // NaturalLanguage 语种概率下限（拉丁语系）
@@ -478,7 +485,14 @@ let frenchForceList: Set<String> = [
     "sur","economiste","économiste",
     // starling/lingua 离线校准补丁（无凭证方案）：états 去数字后为单 token，
     //   历史误判意语(single:italian-feature)，lingua 判法语置信 0.99 → 强制法语
+<<<<<<< ours
     "états","etats"
+>>>>>>> theirs
+=======
+    "états","etats",
+    // 第2轮校准补丁（lingua 高置信 ≥0.87）：法语海报高频词，历史误判意/英
+    //   仅收无歧义变体：cinéma(带é区别于意/英cinema)、séance(英亦有seance故只收带é)
+    "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement"
 >>>>>>> theirs
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
@@ -531,7 +545,7 @@ let italianForceList: Set<String> = [
     "tutto","tutta","tutti","tutte","cosa","cose","molto","bene","male",
     "siracusa","palermo","sicilia","siciliano","siciliana",
     "amore","caro","cara","amico","amica","cuore","vita","mondo",
-    "piazza","palazzo","chiesa","duomo","museo","teatro",
+    "piazza","palazzo","chiesa","duomo","museo","teatro","spettacolo",
     "cultura","sport","feste","settimana","giorno","anno",
     "mio","mia","tuo","tua","suo","sua","noi","voi","loro",
     "nel","nella","nelle","negli","nello","alle","agli","alla","al","del","della","delle","degli","dello",
@@ -627,7 +641,9 @@ let portugueseForceList: Set<String> = [
     "copa","virada","futebol","esporte",   // 葡语特征较强，必加
     "uma",                                  // 常见葡语词，加入
     // 以下为弱信号（也可能是英语/通用词），加入但降低副作用风险，标注为弱信号：
-    "era","nova","digital"
+    "era","nova","digital",
+    // 第2轮校准补丁（lingua ≥0.80）：obrigado(误判es)、português(误判fr)
+    "obrigado","português","portugues"
 ]
 func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
 let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
@@ -668,7 +684,9 @@ let spanishForceList: Set<String> = [
     "domingo","lunes","martes","miércoles","miercoles","jueves","viernes",
     "enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","setiembre",
     "octubre","noviembre","diciembre",
-    "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios"
+    "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios",
+    // 第2轮校准补丁（lingua 0.99）：corazón 历史误判 pl
+    "corazón","corazon"
 ]
 func isSpanishForced(_ token: String) -> Bool { spanishForceList.contains(token.lowercased()) }
 // 西语高频功能词/停用词
@@ -1293,6 +1311,16 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     if !tokens.isEmpty && tokensNZ.isEmpty { return ("zh", true) }
     // 任务3：著名人名/地名整块短语（如 LE CORBUSIER）→ 强制「英语人名/地名」
     if properNounForcePhrases.contains(normalizedKey(t)) { return ("name", true) }
+    // ③-黑名单：挪威语拦截 —— 文本足够长且 fastText/NL 首选为挪威语(no/nb/nn)且置信达标 →
+    //   直接判「未识别」，避免回退误判成德语/英语等次优白名单语种。
+    if letters >= BLACKLIST_MIN_LETTERS {
+        if let ft = fastTextLang(nlInput), blacklistLangCodes.contains(ft.code), ft.prob >= BLACKLIST_MIN_PROB {
+            return ("und", false)
+        }
+        if let nl = nlDetect(nlInput), blacklistLangCodes.contains(nl.code), nl.prob >= BLACKLIST_MIN_PROB {
+            return ("und", false)
+        }
+    }
     let score = latinLangScore(tokensNZ)
 
     // ③-a 单 token：先判德语形态（词根 werk/statt/verlag/kunst/bast/tier…、
@@ -1343,6 +1371,9 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             if isGermanForced(one) { return ("de", true) }
             // 意大利语强制词优先于英语人名（如 ADESSO/SICILIA）
             if isItalianForced(one) { return ("it", true) }
+            // 葡语强制词前置（第2轮校准）：obrigado/português 等 curated 词须先于
+            //   suffixMorphology/tokenLooksFrench，避免 português 被误判 fr、obrigado 误判 es。
+            if isPortugueseForced(one) { return ("pt", true) }
             // 任务A：短词(≤4字符)字符特征覆盖 —— 意语重音 à è é ì ò ù → it；
             //   法语专有 â ê î ô û ç → fr；德语 ä ö ü ß → de（不走 NL，直接采信）。
             //   放在强制词表之后，保证 qué/café 等被强制词表认领的词不被误抢。
@@ -1358,7 +1389,6 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             if tokenLooksFrench(one) { return ("fr", true) }
             if tokenLooksPolish(one) { return ("pl", true) }
             if tokenLooksItalian(one) { return ("it", true) }
-            if isPortugueseForced(one) { return ("pt", true) }
             if tokenLooksPortuguese(one) { return ("pt", true) }
             if tokenLooksIndonesian(one) { return ("id", true) }
             // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
