@@ -409,7 +409,9 @@ let germanForceList: Set<String> = [
     // 第7批：德语虚词/系动词保护（防被判印尼语等；das/die/der/des/und 已在上方，去重后仅补以下缺失项）
     "sind","ist","nicht",
     // batch3 校准补丁（组4·德语IT杂志 COMPUTERWOCHE，被误判英语）
-    "keine","angst","justiz","nachhaltigkeit","managen","kuschelkurs","emissionen"
+    "keine","angst","justiz","nachhaltigkeit","managen","kuschelkurs","emissionen",
+    // batch4 校准补丁（组4·德语活动海报《柏林科学之夜》，被误判en；juni 已在上方去重跳过）
+    "u-bahn","u-bahnschacht","nacht","wissenschaften","berliner","mensch"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -489,7 +491,9 @@ let frenchForceList: Set<String> = [
     //   仅收无歧义变体：cinéma(带é区别于意/英cinema)、séance(英亦有seance故只收带é)
     "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement",
     // batch3 校准补丁（组3·法语徒步杂志 Trek，被误判 it/en/ru）
-    "numéro","numero","irlande","écosse","ecosse","conseils","randonnées","randonnees","pyrénées","pyrenees"
+    "numéro","numero","irlande","écosse","ecosse","conseils","randonnées","randonnees","pyrénées","pyrenees",
+    // batch4 校准补丁（组3·法语海报《FRACAS》，被误判en/pt）
+    "campagnes","fracas","guerre","soirée","soiree","lancement","média","combats","écologiques","ecologiques"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -559,7 +563,10 @@ let italianForceList: Set<String> = [
     "perché","perche","voglio","vorrei","chiesto","concesso","arriva","sicuro",
     "convenzionale","superficiale","sentirsi","essere","tornare","servire",
     "prendere","biglietto","aereo","giorni","mese","cuoio","così","cosi","il",
-    "serve","complice","giudice","boccia","brillare","testa"
+    "serve","complice","giudice","boccia","brillare","testa",
+    // batch4 校准补丁（组1宪法海报/组2电影海报《LA TERRAZZA》，被误判fr/en）
+    "terrazza","sentir","cantare","piace","manifesti","testimanifesti.it",
+    "rivoluzione","mangiati","signora","costituzione","repubblica"
 ]
 func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
 // 意大利语 L' 省音前缀（如 L'ORFEO / L'Elisir）：命中即视为意大利语特征，优先于法语省音
@@ -639,7 +646,9 @@ let portugueseForceList: Set<String> = [
     // 以下为弱信号（也可能是英语/通用词），加入但降低副作用风险，标注为弱信号：
     "era","nova","digital",
     // 第2轮校准补丁（lingua ≥0.80）：obrigado(误判es)、português(误判fr)
-    "obrigado","português","portugues"
+    "obrigado","português","portugues",
+    // batch4 校准补丁（组5·葡语社媒设计图，被误判es/it）
+    "lembrar","identidade","comportamento","percepção","comunicação","público-alvo","arquétipo"
 ]
 func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
 let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
