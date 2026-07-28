@@ -19,7 +19,6 @@ import Vision
 import NaturalLanguage
 import AppKit
 import ImageIO
-import CoreImage   // 低置信 OCR 块二值化重试（CIImage/CIFilter）
 import CoreGraphics   // CGPreflightScreenCaptureAccess 权限检查
 import UserNotifications
 import Carbon.HIToolbox   // 全局快捷键 RegisterEventHotKey
@@ -480,21 +479,13 @@ let frenchForceList: Set<String> = [
     // 第8批：法语识别率补充（去重后仅补以下缺失项）
     //   ⚠ le/les/la/des/du/sur/dans 等短冠词/介词也可能是英/德碎片，加入前已跑测试确认无退化。
     "entretien","épargne","epargne","coach","coachs","le","les","la","des","du","nos","dans",
-<<<<<<< ours
-    "sur","economiste","économiste"
-=======
     "sur","economiste","économiste",
     // starling/lingua 离线校准补丁（无凭证方案）：états 去数字后为单 token，
     //   历史误判意语(single:italian-feature)，lingua 判法语置信 0.99 → 强制法语
-<<<<<<< ours
-    "états","etats"
->>>>>>> theirs
-=======
     "états","etats",
     // 第2轮校准补丁（lingua 高置信 ≥0.87）：法语海报高频词，历史误判意/英
     //   仅收无歧义变体：cinéma(带é区别于意/英cinema)、séance(英亦有seance故只收带é)
     "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement"
->>>>>>> theirs
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -1530,45 +1521,6 @@ func loadCGImage(_ path: String) -> CGImage? {
 
 struct Block { let text: String; let box: CGRect; let lang: String }
 
-// 改动1：低置信 OCR 块二值化重试。裁剪该 block 区域 →
-//   CIColorControls(contrast:2.0, brightness:0.1, saturation:0) + CIColorMonochrome 简单二值化 →
-//   重新 OCR。返回 (文本, 置信度)，供调用方与原结果比较取更优者。
-func binarizeRetryOCR(_ cg: CGImage, _ boundingBox: CGRect) -> (text: String, confidence: Float)? {
-    let W = CGFloat(cg.width), H = CGFloat(cg.height)
-    // Vision boundingBox 归一化、原点左下；CGImage 原点左上，需翻转 Y
-    let cropRect = CGRect(x: boundingBox.minX * W,
-                          y: (1 - boundingBox.maxY) * H,
-                          width: boundingBox.width * W,
-                          height: boundingBox.height * H).integral
-    guard cropRect.width >= 2, cropRect.height >= 2, let sub = cg.cropping(to: cropRect) else { return nil }
-    let ci = CIImage(cgImage: sub)
-        .applyingFilter("CIColorControls",
-                        parameters: [kCIInputContrastKey: 2.0, kCIInputBrightnessKey: 0.1, kCIInputSaturationKey: 0.0])
-        .applyingFilter("CIColorMonochrome",
-                        parameters: [kCIInputColorKey: CIColor(red: 0.5, green: 0.5, blue: 0.5), kCIInputIntensityKey: 1.0])
-    guard let outCG = CIContext(options: nil).createCGImage(ci, from: ci.extent) else { return nil }
-    var result: (String, Float)? = nil
-    let sem = DispatchSemaphore(value: 0)
-    let req = VNRecognizeTextRequest { request, _ in
-        if let obs = request.results as? [VNRecognizedTextObservation],
-           let cand = obs.compactMap({ $0.topCandidates(1).first }).max(by: { $0.confidence < $1.confidence }) {
-            result = (cand.string, cand.confidence)
-        }
-        sem.signal()
-    }
-    req.recognitionLevel = .accurate
-    req.usesLanguageCorrection = true
-    req.minimumTextHeight = 0.0
-    if #available(macOS 13.0, *) {
-        req.revision = VNRecognizeTextRequestRevision3
-        req.automaticallyDetectsLanguage = true
-    }
-    let handler = VNImageRequestHandler(cgImage: outCG, options: [:])
-    try? handler.perform([req])
-    sem.wait()
-    return result
-}
-
 func ocrBlocks(_ cg: CGImage) -> [Block] {
     var blocks: [Block] = []
     let sem = DispatchSemaphore(value: 0)
@@ -1578,13 +1530,7 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
             let texts: [String] = obs.map { $0.topCandidates(1).first?.string ?? "" }
             for (i, o) in obs.enumerated() {
                 guard let cand = o.topCandidates(1).first else { continue }
-                var s = cand.string
-                // 改动1：低置信块(<0.45)二值化重试，若重试置信更高则采用重试文本
-                if cand.confidence < 0.45,
-                   let retry = binarizeRetryOCR(cg, o.boundingBox),
-                   retry.confidence > cand.confidence, !retry.text.isEmpty {
-                    s = retry.text
-                }
+                let s = cand.string
                 if s.isEmpty { continue }
                 // ---- 第11批·改动E：Apple NL 人名/地名 token 级剔除（在识别管线「之前」）----
                 //   对本块每个 token 用 NLTagger(.nameType) 判定；命中人名/地名者从统计中完全剔除
@@ -1625,7 +1571,7 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
         sem.signal()
     }
     req.recognitionLevel = .accurate
-    req.usesLanguageCorrection = true    // 改动1：开启语言纠错，提升艺术字体/花体识别
+    req.usesLanguageCorrection = false
     req.minimumTextHeight = 0.0
     if #available(macOS 13.0, *) {
         req.revision = VNRecognizeTextRequestRevision3
@@ -1656,14 +1602,7 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
     struct HItem { let text: String; let color: NSColor?; let width: CGFloat }
     var items: [HItem] = []
     if singleDominant {
-        var t = "整体：\(cnName(dominantLang))"
-        // 改动2：即使单语主导，也提示存在的少量其他语种「含 YYY N%」，不完全隐藏
-        if total > 0, let sec = breakdown.first(where: {
-            $0.0 != dominantLang && !["und", "name", "num", "zh"].contains($0.0) && $0.1 > 0
-        }) {
-            let pct = Int((Double(sec.1) / Double(total) * 100).rounded())
-            if pct >= 1 { t += "（含 \(cnName(sec.0)) \(pct)%）" }
-        }
+        let t = "整体：\(cnName(dominantLang))"
         let tw = (t as NSString).size(withAttributes: hAttrs).width
         items.append(HItem(text: t, color: color(dominantLang), width: dotR + 6 + tw))
     } else {
@@ -1999,7 +1938,7 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         dominantLang = top.key
         // 任务【最高优先级】：仅当"真实只有一种语言"才用简洁模式；只要有≥2种真实语言，
         //   即使某语占比≥80% 也保留混语分块+占比，绝不退化为"整体判断一种语言"。
-        if realLangs.count <= 1 && Double(top.value) / Double(total) >= 0.90 { singleDominant = true }
+        if realLangs.count <= 1 && Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
     }
     // 问题5：非中文真实语言 token 极少（<3）且截图含中文/拼音 → 判「未识别（主要为中文）」，不触发整体德语
     let realBlockCount = blocks.filter { $0.lang != "und" && $0.lang != "name" && $0.lang != "num" && $0.lang != "zh" }.count
