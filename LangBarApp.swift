@@ -407,11 +407,7 @@ let germanForceList: Set<String> = [
     // 第6批：德语词被判英语修复（eco.nova/eco.seminare 品牌靠 seminare；feiern in Tirol 靠 feiern/tirol）
     "berge","feiern","tirol","seminare",
     // 第7批：德语虚词/系动词保护（防被判印尼语等；das/die/der/des/und 已在上方，去重后仅补以下缺失项）
-    "sind","ist","nicht",
-    // batch3 校准补丁（组4·德语IT杂志 COMPUTERWOCHE，被误判英语）
-    "keine","angst","justiz","nachhaltigkeit","managen","kuschelkurs","emissionen",
-    // batch4 校准补丁（组4·德语活动海报《柏林科学之夜》，被误判en；juni 已在上方去重跳过）
-    "u-bahn","u-bahnschacht","nacht","wissenschaften","berliner","mensch"
+    "sind","ist","nicht"
 ]
 func isGermanForced(_ token: String) -> Bool { germanForceList.contains(token.lowercased()) }
 
@@ -489,11 +485,7 @@ let frenchForceList: Set<String> = [
     "états","etats",
     // 第2轮校准补丁（lingua 高置信 ≥0.87）：法语海报高频词，历史误判意/英
     //   仅收无歧义变体：cinéma(带é区别于意/英cinema)、séance(英亦有seance故只收带é)
-    "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement",
-    // batch3 校准补丁（组3·法语徒步杂志 Trek，被误判 it/en/ru）
-    "numéro","numero","irlande","écosse","ecosse","conseils","randonnées","randonnees","pyrénées","pyrenees",
-    // batch4 校准补丁（组3·法语海报《FRACAS》，被误判en/pt）
-    "campagnes","fracas","guerre","soirée","soiree","lancement","média","combats","écologiques","ecologiques"
+    "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement"
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -563,10 +555,7 @@ let italianForceList: Set<String> = [
     "perché","perche","voglio","vorrei","chiesto","concesso","arriva","sicuro",
     "convenzionale","superficiale","sentirsi","essere","tornare","servire",
     "prendere","biglietto","aereo","giorni","mese","cuoio","così","cosi","il",
-    "serve","complice","giudice","boccia","brillare","testa",
-    // batch4 校准补丁（组1宪法海报/组2电影海报《LA TERRAZZA》，被误判fr/en）
-    "terrazza","sentir","cantare","piace","manifesti","testimanifesti.it",
-    "rivoluzione","mangiati","signora","costituzione","repubblica"
+    "serve","complice","giudice","boccia","brillare","testa"
 ]
 func isItalianForced(_ token: String) -> Bool { italianForceList.contains(token.lowercased()) }
 // 意大利语 L' 省音前缀（如 L'ORFEO / L'Elisir）：命中即视为意大利语特征，优先于法语省音
@@ -646,9 +635,7 @@ let portugueseForceList: Set<String> = [
     // 以下为弱信号（也可能是英语/通用词），加入但降低副作用风险，标注为弱信号：
     "era","nova","digital",
     // 第2轮校准补丁（lingua ≥0.80）：obrigado(误判es)、português(误判fr)
-    "obrigado","português","portugues",
-    // batch4 校准补丁（组5·葡语社媒设计图，被误判es/it）
-    "lembrar","identidade","comportamento","percepção","comunicação","público-alvo","arquétipo"
+    "obrigado","português","portugues"
 ]
 func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
 let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
@@ -691,11 +678,7 @@ let spanishForceList: Set<String> = [
     "octubre","noviembre","diciembre",
     "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios",
     // 第2轮校准补丁（lingua 0.99）：corazón 历史误判 pl
-    "corazón","corazon",
-    // batch3 校准补丁（组6·西班牙体育杂志 Sport Life，多句被误判英/法/德）
-    "entrena","entrena más","calor","abdominales","movilidad","testosterona",
-    "piscina","nadar","deportistas","deporte","planchas","plancha",
-    "alimentacion","alimentación","correr en","correr","la vida es"
+    "corazón","corazon"
 ]
 func isSpanishForced(_ token: String) -> Bool { spanishForceList.contains(token.lowercased()) }
 // 西语高频功能词/停用词
@@ -1338,10 +1321,6 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     //     isProperNounLike 误判为「英语（人名/地名）」。—— 修复问题 1/2/3
     if tokensNZ.count <= 1 {
         if let one = tokensNZ.first {
-            // batch3·改动D：全大写且仅含拉丁字母(<U+0400)的词，禁止被 fastText/NL 判为西里尔/阿拉伯系语种
-            let oneAllUpperLatin = (one == one.uppercased()) && (one != one.lowercased())
-                && one.unicodeScalars.allSatisfy { $0.value < 0x0400 }
-            func cyrArabExcluded(_ code: String) -> Bool { oneAllUpperLatin && (code == "ru" || code == "ar") }
             // 0) 西班牙语独有字符 ñ/¿/¡ → 西语（最高优先，绝无歧义）
             if one.contains(where: { spanishDistinctChars.contains($0) }) { return ("es", true) }
             // 任务3：著名人名/地名单词（AHMEDABAD/CORBUSIER 等）→ 强制专名
@@ -1364,7 +1343,7 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
                         // fastText 主判优先：拼写碎片先送 fastText，≥0.35 即采信；
                         // 否则再看 NL 置信度，仍不足则英语兜底。
                         if let ft = fastTextLang(nlInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
-                           allowedLangCodes.contains(ft.code), !cyrArabExcluded(ft.code) { return (ft.code, true) }
+                           allowedLangCodes.contains(ft.code) { return (ft.code, true) }
                         let p = nlDetect(nlInput)?.prob ?? 0
                         if p < 0.6 {
                             return ("en", true)
@@ -1429,7 +1408,7 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
                 return nlInput
             }()
             if let ft = fastTextLang(ftInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
-               allowedLangCodes.contains(ft.code), !cyrArabExcluded(ft.code) {
+               allowedLangCodes.contains(ft.code) {
                 // 第6批（低优先级）：极小字碎词乱判小语种防护。
                 //   当 token 为纯 ASCII 且无变音符、词长 ≤5、且置信度 <0.5，而 fastText 又输出了
                 //   越南语/印尼语/波兰语/克罗地亚语等小语种时，不采信小语种：优先归英语
@@ -2129,11 +2108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         //   遍历各屏 frame.width*backingScaleFactor / frame.height*backingScaleFactor（像素），
         //   若某屏与图片像素宽高误差 ±10px 内 → 认定选区即该整屏，用它作 resultScreen；
         //   否则（普通局部框选）回退到 captureScreen（热键锁定的鼠标屏），绝不跑屏。
-        // 修复（多屏跑屏）：以「交互框选完成瞬间」鼠标所在屏为准——用户拖拽结束时光标必落在
-        //   截图那块屏上，故它准确反映「截图发生的屏幕」；而 captureScreen 是热键触发瞬间锁定的
-        //   鼠标屏，若截图前鼠标停在别的屏就会导致弹窗跑到那块屏。取不到时回退 captureScreen。
-        let selectionScreen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
-        resultScreen = selectionScreen ?? captureScreen   // 默认：选区完成屏；回退热键锁定屏
+        resultScreen = captureScreen   // 默认：热键锁定屏（最稳）
         if let img = NSImage(contentsOfFile: shotPath),
            let rep = img.representations.compactMap({ $0 as? NSBitmapImageRep }).first {
             let pxW = CGFloat(rep.pixelsWide), pxH = CGFloat(rep.pixelsHigh)
