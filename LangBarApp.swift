@@ -19,6 +19,7 @@ import Vision
 import NaturalLanguage
 import AppKit
 import ImageIO
+import CoreImage   // 低置信 OCR 块二值化重试（CIImage/CIFilter）
 import CoreGraphics   // CGPreflightScreenCaptureAccess 权限检查
 import UserNotifications
 import Carbon.HIToolbox   // 全局快捷键 RegisterEventHotKey
@@ -64,6 +65,13 @@ let allowedLangCodes: Set<String> = [
     "it", "pt", "vi", "id", "ja", "ko", "th", "ar",
     "de", "fr", "en", "pl", "es", "ru", "zh"
 ]
+
+// 语种黑名单：明确不需要识别的语种（挪威语：书面挪威 nb / 新挪威 nn / 通用 no）。
+//   命中即判「未识别」und，阻断回退到次优白名单语种（如被误判成德语/英语）造成的错判。
+let blacklistLangCodes: Set<String> = ["no", "nb", "nn"]
+// 黑名单拦截阈值：fastText/NL 首选为挪威语且概率 ≥ 此值、且文本足够长时才拦，避免短词误伤。
+let BLACKLIST_MIN_PROB: Double = 0.60
+let BLACKLIST_MIN_LETTERS: Int = 8
 
 // 置信度阈值：低于此值判为「未识别」，绝不乱猜
 let OCR_CONFIDENCE_MIN: Float = 0.30       // Vision OCR 单块置信度下限
@@ -472,7 +480,21 @@ let frenchForceList: Set<String> = [
     // 第8批：法语识别率补充（去重后仅补以下缺失项）
     //   ⚠ le/les/la/des/du/sur/dans 等短冠词/介词也可能是英/德碎片，加入前已跑测试确认无退化。
     "entretien","épargne","epargne","coach","coachs","le","les","la","des","du","nos","dans",
+<<<<<<< ours
     "sur","economiste","économiste"
+=======
+    "sur","economiste","économiste",
+    // starling/lingua 离线校准补丁（无凭证方案）：états 去数字后为单 token，
+    //   历史误判意语(single:italian-feature)，lingua 判法语置信 0.99 → 强制法语
+<<<<<<< ours
+    "états","etats"
+>>>>>>> theirs
+=======
+    "états","etats",
+    // 第2轮校准补丁（lingua 高置信 ≥0.87）：法语海报高频词，历史误判意/英
+    //   仅收无歧义变体：cinéma(带é区别于意/英cinema)、séance(英亦有seance故只收带é)
+    "cinéma","musée","musee","séance","liberté","liberte","société","societe","prochainement"
+>>>>>>> theirs
 ]
 func isFrenchForced(_ token: String) -> Bool { frenchForceList.contains(token.lowercased()) }
 // 法语缩略前缀：s' l' d' n' j' c' m' qu' —— 出现即视为法语特征
@@ -524,7 +546,7 @@ let italianForceList: Set<String> = [
     "tutto","tutta","tutti","tutte","cosa","cose","molto","bene","male",
     "siracusa","palermo","sicilia","siciliano","siciliana",
     "amore","caro","cara","amico","amica","cuore","vita","mondo",
-    "piazza","palazzo","chiesa","duomo","museo","teatro",
+    "piazza","palazzo","chiesa","duomo","museo","teatro","spettacolo",
     "cultura","sport","feste","settimana","giorno","anno",
     "mio","mia","tuo","tua","suo","sua","noi","voi","loro",
     "nel","nella","nelle","negli","nello","alle","agli","alla","al","del","della","delle","degli","dello",
@@ -620,7 +642,9 @@ let portugueseForceList: Set<String> = [
     "copa","virada","futebol","esporte",   // 葡语特征较强，必加
     "uma",                                  // 常见葡语词，加入
     // 以下为弱信号（也可能是英语/通用词），加入但降低副作用风险，标注为弱信号：
-    "era","nova","digital"
+    "era","nova","digital",
+    // 第2轮校准补丁（lingua ≥0.80）：obrigado(误判es)、português(误判fr)
+    "obrigado","português","portugues"
 ]
 func isPortugueseForced(_ token: String) -> Bool { portugueseForceList.contains(token.lowercased()) }
 let portugueseSuffixes: [String] = ["ção","ções","ário","ária","eiro","eira","eiras",
@@ -661,7 +685,9 @@ let spanishForceList: Set<String> = [
     "domingo","lunes","martes","miércoles","miercoles","jueves","viernes",
     "enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","setiembre",
     "octubre","noviembre","diciembre",
-    "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios"
+    "sostenibilidad","elaborado","cifras","hormigón","hormigon","desafíos","desafios",
+    // 第2轮校准补丁（lingua 0.99）：corazón 历史误判 pl
+    "corazón","corazon"
 ]
 func isSpanishForced(_ token: String) -> Bool { spanishForceList.contains(token.lowercased()) }
 // 西语高频功能词/停用词
@@ -1286,6 +1312,16 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     if !tokens.isEmpty && tokensNZ.isEmpty { return ("zh", true) }
     // 任务3：著名人名/地名整块短语（如 LE CORBUSIER）→ 强制「英语人名/地名」
     if properNounForcePhrases.contains(normalizedKey(t)) { return ("name", true) }
+    // ③-黑名单：挪威语拦截 —— 文本足够长且 fastText/NL 首选为挪威语(no/nb/nn)且置信达标 →
+    //   直接判「未识别」，避免回退误判成德语/英语等次优白名单语种。
+    if letters >= BLACKLIST_MIN_LETTERS {
+        if let ft = fastTextLang(nlInput), blacklistLangCodes.contains(ft.code), ft.prob >= BLACKLIST_MIN_PROB {
+            return ("und", false)
+        }
+        if let nl = nlDetect(nlInput), blacklistLangCodes.contains(nl.code), nl.prob >= BLACKLIST_MIN_PROB {
+            return ("und", false)
+        }
+    }
     let score = latinLangScore(tokensNZ)
 
     // ③-a 单 token：先判德语形态（词根 werk/statt/verlag/kunst/bast/tier…、
@@ -1336,6 +1372,9 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             if isGermanForced(one) { return ("de", true) }
             // 意大利语强制词优先于英语人名（如 ADESSO/SICILIA）
             if isItalianForced(one) { return ("it", true) }
+            // 葡语强制词前置（第2轮校准）：obrigado/português 等 curated 词须先于
+            //   suffixMorphology/tokenLooksFrench，避免 português 被误判 fr、obrigado 误判 es。
+            if isPortugueseForced(one) { return ("pt", true) }
             // 任务A：短词(≤4字符)字符特征覆盖 —— 意语重音 à è é ì ò ù → it；
             //   法语专有 â ê î ô û ç → fr；德语 ä ö ü ß → de（不走 NL，直接采信）。
             //   放在强制词表之后，保证 qué/café 等被强制词表认领的词不被误抢。
@@ -1351,7 +1390,6 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             if tokenLooksFrench(one) { return ("fr", true) }
             if tokenLooksPolish(one) { return ("pl", true) }
             if tokenLooksItalian(one) { return ("it", true) }
-            if isPortugueseForced(one) { return ("pt", true) }
             if tokenLooksPortuguese(one) { return ("pt", true) }
             if tokenLooksIndonesian(one) { return ("id", true) }
             // 3.5) 含 á é í ó ú 且未被上述任何语种认领的重音词 → 西语
@@ -1492,6 +1530,45 @@ func loadCGImage(_ path: String) -> CGImage? {
 
 struct Block { let text: String; let box: CGRect; let lang: String }
 
+// 改动1：低置信 OCR 块二值化重试。裁剪该 block 区域 →
+//   CIColorControls(contrast:2.0, brightness:0.1, saturation:0) + CIColorMonochrome 简单二值化 →
+//   重新 OCR。返回 (文本, 置信度)，供调用方与原结果比较取更优者。
+func binarizeRetryOCR(_ cg: CGImage, _ boundingBox: CGRect) -> (text: String, confidence: Float)? {
+    let W = CGFloat(cg.width), H = CGFloat(cg.height)
+    // Vision boundingBox 归一化、原点左下；CGImage 原点左上，需翻转 Y
+    let cropRect = CGRect(x: boundingBox.minX * W,
+                          y: (1 - boundingBox.maxY) * H,
+                          width: boundingBox.width * W,
+                          height: boundingBox.height * H).integral
+    guard cropRect.width >= 2, cropRect.height >= 2, let sub = cg.cropping(to: cropRect) else { return nil }
+    let ci = CIImage(cgImage: sub)
+        .applyingFilter("CIColorControls",
+                        parameters: [kCIInputContrastKey: 2.0, kCIInputBrightnessKey: 0.1, kCIInputSaturationKey: 0.0])
+        .applyingFilter("CIColorMonochrome",
+                        parameters: [kCIInputColorKey: CIColor(red: 0.5, green: 0.5, blue: 0.5), kCIInputIntensityKey: 1.0])
+    guard let outCG = CIContext(options: nil).createCGImage(ci, from: ci.extent) else { return nil }
+    var result: (String, Float)? = nil
+    let sem = DispatchSemaphore(value: 0)
+    let req = VNRecognizeTextRequest { request, _ in
+        if let obs = request.results as? [VNRecognizedTextObservation],
+           let cand = obs.compactMap({ $0.topCandidates(1).first }).max(by: { $0.confidence < $1.confidence }) {
+            result = (cand.string, cand.confidence)
+        }
+        sem.signal()
+    }
+    req.recognitionLevel = .accurate
+    req.usesLanguageCorrection = true
+    req.minimumTextHeight = 0.0
+    if #available(macOS 13.0, *) {
+        req.revision = VNRecognizeTextRequestRevision3
+        req.automaticallyDetectsLanguage = true
+    }
+    let handler = VNImageRequestHandler(cgImage: outCG, options: [:])
+    try? handler.perform([req])
+    sem.wait()
+    return result
+}
+
 func ocrBlocks(_ cg: CGImage) -> [Block] {
     var blocks: [Block] = []
     let sem = DispatchSemaphore(value: 0)
@@ -1501,7 +1578,13 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
             let texts: [String] = obs.map { $0.topCandidates(1).first?.string ?? "" }
             for (i, o) in obs.enumerated() {
                 guard let cand = o.topCandidates(1).first else { continue }
-                let s = cand.string
+                var s = cand.string
+                // 改动1：低置信块(<0.45)二值化重试，若重试置信更高则采用重试文本
+                if cand.confidence < 0.45,
+                   let retry = binarizeRetryOCR(cg, o.boundingBox),
+                   retry.confidence > cand.confidence, !retry.text.isEmpty {
+                    s = retry.text
+                }
                 if s.isEmpty { continue }
                 // ---- 第11批·改动E：Apple NL 人名/地名 token 级剔除（在识别管线「之前」）----
                 //   对本块每个 token 用 NLTagger(.nameType) 判定；命中人名/地名者从统计中完全剔除
@@ -1542,7 +1625,7 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
         sem.signal()
     }
     req.recognitionLevel = .accurate
-    req.usesLanguageCorrection = false
+    req.usesLanguageCorrection = true    // 改动1：开启语言纠错，提升艺术字体/花体识别
     req.minimumTextHeight = 0.0
     if #available(macOS 13.0, *) {
         req.revision = VNRecognizeTextRequestRevision3
@@ -1573,7 +1656,14 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
     struct HItem { let text: String; let color: NSColor?; let width: CGFloat }
     var items: [HItem] = []
     if singleDominant {
-        let t = "整体：\(cnName(dominantLang))"
+        var t = "整体：\(cnName(dominantLang))"
+        // 改动2：即使单语主导，也提示存在的少量其他语种「含 YYY N%」，不完全隐藏
+        if total > 0, let sec = breakdown.first(where: {
+            $0.0 != dominantLang && !["und", "name", "num", "zh"].contains($0.0) && $0.1 > 0
+        }) {
+            let pct = Int((Double(sec.1) / Double(total) * 100).rounded())
+            if pct >= 1 { t += "（含 \(cnName(sec.0)) \(pct)%）" }
+        }
         let tw = (t as NSString).size(withAttributes: hAttrs).width
         items.append(HItem(text: t, color: color(dominantLang), width: dotR + 6 + tw))
     } else {
@@ -1909,7 +1999,7 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         dominantLang = top.key
         // 任务【最高优先级】：仅当"真实只有一种语言"才用简洁模式；只要有≥2种真实语言，
         //   即使某语占比≥80% 也保留混语分块+占比，绝不退化为"整体判断一种语言"。
-        if realLangs.count <= 1 && Double(top.value) / Double(total) >= 0.80 { singleDominant = true }
+        if realLangs.count <= 1 && Double(top.value) / Double(total) >= 0.90 { singleDominant = true }
     }
     // 问题5：非中文真实语言 token 极少（<3）且截图含中文/拼音 → 判「未识别（主要为中文）」，不触发整体德语
     let realBlockCount = blocks.filter { $0.lang != "und" && $0.lang != "name" && $0.lang != "num" && $0.lang != "zh" }.count
