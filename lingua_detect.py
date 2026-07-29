@@ -87,8 +87,48 @@ def _detect_multi(text):
 
 def main():
     is_multi = "--multi" in sys.argv[1:]
-    text = _read_text()
+    is_batch = "--batch" in sys.argv[1:]
 
+    # 批量模式：stdin 读 JSON 字符串数组，一次建 detector，输出对齐的结果数组。
+    #   目的是把"每个 OCR 块一个子进程(各~0.7s 冷启动)"降为"整页一次子进程"。
+    if is_batch:
+        res = []
+        try:
+            raw = sys.stdin.read()
+            texts = json.loads(raw) if raw.strip() else []
+            if not isinstance(texts, list):
+                texts = []
+            detector = _build_detector() if texts else None
+            for t in texts:
+                item = {"lang": "und", "confidence": 0.0}
+                try:
+                    s = (t or "")
+                    if s.strip() and detector is not None:
+                        tfd = s
+                        st = s.strip()
+                        if st.upper() == st and any(c.isalpha() for c in st):
+                            tfd = st.lower()
+                        conf = detector.compute_language_confidence_values(tfd)
+                        if conf:
+                            top = conf[0]
+                            c = float(top.value)
+                            ok = True
+                            if len(conf) >= 2:
+                                sec = float(conf[1].value)
+                                if c - sec < 0.10 and c < 0.50:
+                                    ok = False
+                            if ok:
+                                item = {"lang": top.language.iso_code_639_1.name.lower(),
+                                        "confidence": c}
+                except Exception:
+                    item = {"lang": "und", "confidence": 0.0}
+                res.append(item)
+        except Exception:
+            res = []
+        print(json.dumps(res))
+        return 0
+
+    text = _read_text()
     if is_multi:
         print(json.dumps(_detect_multi(text)))
         return 0

@@ -15076,6 +15076,59 @@ func linguaLang(_ text: String) -> (code: String, confidence: Double)? {
     return result
 }
 
+// 批量预热 lingua 缓存：一次子进程处理所有文本，避免"每块一个子进程(各~0.7s 冷启动)"。
+//   结果按 normalizedKey 写入 linguaCache，之后 linguaLang(text) 直接命中缓存、零子进程。
+//   仅对缓存中尚不存在的文本发起批量调用。
+func linguaBatchPrewarm(_ texts: [String]) {
+    guard linguaAvailable, let py = python3Bin, let script = linguaScript else { return }
+    // 去重 + 过滤已缓存
+    var pending: [String] = []
+    var seen = Set<String>()
+    linguaCacheLock.lock()
+    for t in texts {
+        let k = normalizedKey(t)
+        if k.isEmpty || seen.contains(k) { continue }
+        if linguaCache[k] != nil { continue }
+        seen.insert(k); pending.append(t)
+    }
+    linguaCacheLock.unlock()
+    if pending.isEmpty { return }
+    guard let inData = try? JSONSerialization.data(withJSONObject: pending) else { return }
+
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: py)
+    proc.arguments = [script, "--batch"]
+    let inPipe = Pipe(); let outPipe = Pipe()
+    proc.standardInput = inPipe
+    proc.standardOutput = outPipe
+    proc.standardError = Pipe()
+    do { try proc.run() } catch { return }
+    inPipe.fileHandleForWriting.write(inData)
+    inPipe.fileHandleForWriting.closeFile()
+    // 批量超时放宽到 6 秒（整页一次，值得等）
+    let timedOut = NSLock(); var didTimeout = false
+    let watchdog = DispatchWorkItem {
+        if proc.isRunning { timedOut.lock(); didTimeout = true; timedOut.unlock(); proc.terminate() }
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 6.0, execute: watchdog)
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    watchdog.cancel()
+    timedOut.lock(); let to = didTimeout; timedOut.unlock()
+    if to { return }
+    guard let arr = (try? JSONSerialization.jsonObject(with: outData)) as? [[String: Any]],
+          arr.count == pending.count else { return }
+    linguaCacheLock.lock()
+    for (i, obj) in arr.enumerated() {
+        let k = normalizedKey(pending[i])
+        let lang = (obj["lang"] as? String)?.lowercased() ?? "und"
+        let conf = (obj["confidence"] as? Double) ?? 0.0
+        let val: (code: String, confidence: Double)? = (lang == "und") ? nil : (lang, conf)
+        linguaCache[k] = LinguaCacheEntry(value: val)
+    }
+    linguaCacheLock.unlock()
+}
+
 // 段落级混语切分（detect_multiple_languages_of）：对整页文本做混语分段，
 //   返回「主语种 + 该语种字符覆盖占比」。用于判断整页是否「实质单语」：
 //   即使个别 OCR 行单独看易混，只要整页 ≥ 阈值比例都是同一语种，就可放心把
@@ -15778,6 +15831,17 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
             if b.text.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return nil }
             let toks = latinTokens(b.text).filter { !isNumericToken($0) }
             return toks.isEmpty ? nil : toks.joined(separator: " ")
+        }
+        // 性能：一次性批量预热 lingua 缓存（整页文本 + 所有块文本），把后续
+        //   linguaLang(pageText) 与循环内 linguaLang(b.text) 全部变为缓存命中、零子进程。
+        //   避免"每块各起一个 python 子进程(各~0.7s 冷启动)"导致的十几秒卡顿。
+        if linguaAvailable && parts.count >= 2 {
+            var warm = parts
+            warm.append(parts.joined(separator: " "))
+            for b in bs where b.lang != "zh" && b.lang != "name" && b.lang != "num" {
+                if !b.text.isEmpty { warm.append(b.text) }
+            }
+            linguaBatchPrewarm(warm)
         }
         // 页面主语种 + 置信度：行数过少 / fastText 不可用时置为「未知」（pageLang=nil），
         //   此时跳过「改动1 低置信行纠错」与「改动A 葡语锁定」，但仍需执行「改动B 纯拉丁行硬排除」。
