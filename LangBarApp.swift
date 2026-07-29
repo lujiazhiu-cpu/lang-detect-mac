@@ -16153,8 +16153,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let menu = NSMenu()
         // 菜单里展示全局快捷键提示（⌃⌥L），实际由下面的 RegisterEventHotKey 全局注册
-        let capItem = NSMenuItem(title: "📸 截图识别语种", action: #selector(capture), keyEquivalent: "l")
-        capItem.keyEquivalentModifierMask = [.control, .option]
+        // 注意：这里 keyEquivalent 必须留空，只在标题里显示提示文案。
+        //   若同时设 keyEquivalent 会与全局 RegisterEventHotKey 双重触发 → capture() 执行两次 → 弹窗出现两次。
+        let capItem = NSMenuItem(title: "📸 截图识别语种  (⌃⌥L)", action: #selector(capture), keyEquivalent: "")
         capItem.target = self
         menu.addItem(capItem)
         menu.addItem(NSMenuItem.separator())
