@@ -74,6 +74,15 @@ echo "[5/7] 放入菜单栏图标 ..."
 [ -f "$RES_DIR/menubar_icon.png" ]    && cp "$RES_DIR/menubar_icon.png"    "$APP/Contents/Resources/"
 [ -f "$RES_DIR/menubar_icon@2x.png" ] && cp "$RES_DIR/menubar_icon@2x.png" "$APP/Contents/Resources/"
 
+# 4a) 把 lingua 主力引擎脚本打包进 App 包内（Contents/Resources），使 App 自包含、
+#     不再依赖 ~/lang-detect-mac 目录（resolveLinguaScript 优先用 Bundle 内路径）
+if [ -f "$SRC_DIR/lingua_detect.py" ]; then
+    cp "$SRC_DIR/lingua_detect.py" "$APP/Contents/Resources/"
+    echo "     ✅ 已内置 lingua 引擎脚本 lingua_detect.py（App 自包含，不依赖外部目录）"
+else
+    echo "     ⚠️ 未发现 lingua_detect.py —— lingua 引擎将退回外部目录查找"
+fi
+
 # 4b) 若已准备 fastText 模型（见 setup_fasttext.sh），一并打进 .app，使其自带补充验证层
 if [ -f "$RES_DIR/lid.176.bin" ]; then
     cp "$RES_DIR/lid.176.bin" "$APP/Contents/Resources/"
