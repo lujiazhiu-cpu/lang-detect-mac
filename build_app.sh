@@ -132,8 +132,23 @@ $ICON_KEY
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "     （ad-hoc 签名跳过，不影响使用）"
-xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+# 先剥离所有扩展属性（quarantine / provenance 等），再签名，避免签名后被污染导致「已损坏」
+xattr -cr "$APP" 2>/dev/null || true
+if codesign --force --deep --sign - "$APP" 2>/tmp/langbar_sign.log; then
+    echo "     ✅ ad-hoc 签名完成"
+else
+    echo "❌ 签名失败，日志如下："; cat /tmp/langbar_sign.log; exit 1
+fi
+# 再次剥离（签名过程可能重新写入属性），并校验签名封印完整（防止「已损坏或不完整」）
+xattr -cr "$APP" 2>/dev/null || true
+if ! codesign --verify --deep --strict --verbose=2 "$APP" 2>/tmp/langbar_verify.log; then
+    echo "❌ 签名校验未通过（App 可能损坏或不完整），日志如下："; cat /tmp/langbar_verify.log; exit 1
+fi
+echo "     ✅ 签名校验通过：valid on disk"
+# 校验可执行文件为完整 Mach-O，避免半成品被打包
+if ! file "$APP/Contents/MacOS/$EXEC_NAME" | grep -q "Mach-O"; then
+    echo "❌ 可执行文件不是有效的 Mach-O（编译产物不完整）"; exit 1
+fi
 touch "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$APP" 2>/dev/null || true

@@ -1,31 +1,638 @@
 [
-  {"token": "LEI", "expected": "it", "desc": "意大利语代词'她'，历史上被误判为英语人名/地名（force命中 lei）"},
-  {"token": "LUI", "expected": "it", "desc": "意大利语代词'他'，历史上被误判为英语人名/地名（force命中 lui）"},
-  {"token": "LO SENTE", "expected": "it", "desc": "意大利语短句'感觉到它'，历史上被误判英语（lo/sente 均在意语force）"},
-  {"token": "COSA", "expected": "it", "desc": "意大利语'什么/东西'，历史上被误判英语人名（force命中 cosa）"},
-  {"token": "NESSUNO", "expected": "it", "desc": "意大利语'没有人'，历史上被误判英语人名/地名（force命中 nessuno）"},
-  {"token": "LA TUA", "expected": "it", "desc": "意大利语'你的'，历史上被误判英语（tua 在意语force，la 需压过法/西停用词）"},
-  {"token": "HA CHIESTO", "expected": "it", "desc": "意大利语'询问了'，历史上被误判英语（chiesto 在意语force）"},
-  {"token": "UNA PERSONA", "expected": "it", "desc": "意大利语'一个人'，历史上被误判英语（una/persona 均在意语force）"},
-  {"token": "EPPURE ECCOLA LÌ", "expected": "it", "desc": "意大利语'然而她就在那儿'，含重音字符 ì，历史上被误判英语"},
-  {"token": "A TANTO COSÌ", "expected": "it", "desc": "意大利语碎句，含重音字符 ì（così），历史上被误判英语"},
-  {"token": "DI PULITO", "expected": "it", "desc": "意大利语'干净的'，历史上被误判英语（di 停用词 + pulito force）"},
-
-  {"token": "50 ÉTATS", "expected": "fr", "desc": "法语'50个州'，数字剥离后 états 含法语字符 é，历史上被误判英语/数字混判"},
-  {"token": "Un nouveau regard", "expected": "fr", "desc": "法语'一个新视角'，多词短句依赖停用词/NL 判定，历史上被误判英语"},
-  {"token": "BAYONNE", "expected": "fr", "desc": "法国城市巴约讷，历史上被误判英语人名/地名（force命中 bayonne）"},
-  {"token": "DU 15 AU 19 JUILLET", "expected": "fr", "desc": "法语日期'7月15至19日'，du/au 停用词 + juillet 月份force，历史上被误判"},
-  {"token": "ARTS", "expected": "fr", "desc": "法语语境下的'艺术'（VILLE DE ROUBAIX 海报），注意 arts 同时存在于英语force，存在英/法歧义"},
-  {"token": "VILLE DE ROUBAIX", "expected": "fr", "desc": "法语'鲁贝市'，roubaix 城市force + de 停用词，历史上被误判英语人名/地名"},
-
-  {"token": "Operetten", "expected": "de", "desc": "德语'轻歌剧'，历史上被误判英语（force命中 operetten）"},
-  {"token": "NEWS FOR MUSIC MAKERS", "expected": "en", "desc": "英语杂志栏目，历史上被误判德语（news/music/makers 均在英语force，for 为英语停用词）"},
-  {"token": "it's a violin thing", "expected": "en", "desc": "英语口语句，历史上被误判印尼语（violin/thing 在英语force）"},
-
-  {"token": "2026", "expected": "num", "desc": "纯数字年份，历史上被误判西班牙语，应归为数字类 num"},
-
-  {"token": "BUDGET PRODUCER", "expected": "en", "desc": "英语'预算制片人'，历史上被误判人名/地名，依赖英语词典/NL 判定"},
-  {"token": "LOVE IT", "expected": "en", "desc": "英语'喜欢它'，历史上被误判人名/地名（love 在英语force）"},
-  {"token": "BIG SPLASH", "expected": "en", "desc": "英语'大轰动'，历史上被误判人名/地名（big/splash 均在英语force）"},
-  {"token": "SUMMER VIBE", "expected": "en", "desc": "英语'夏日氛围'，历史上被误判人名/地名（summer/vibe 均在英语force）"}
+  {
+    "token": "LEI",
+    "expected": "it",
+    "desc": "意大利语代词'她'，历史上被误判为英语人名/地名（force命中 lei）"
+  },
+  {
+    "token": "LUI",
+    "expected": "it",
+    "desc": "意大利语代词'他'，历史上被误判为英语人名/地名（force命中 lui）"
+  },
+  {
+    "token": "LO SENTE",
+    "expected": "it",
+    "desc": "意大利语短句'感觉到它'，历史上被误判英语（lo/sente 均在意语force）"
+  },
+  {
+    "token": "COSA",
+    "expected": "it",
+    "desc": "意大利语'什么/东西'，历史上被误判英语人名（force命中 cosa）"
+  },
+  {
+    "token": "NESSUNO",
+    "expected": "it",
+    "desc": "意大利语'没有人'，历史上被误判英语人名/地名（force命中 nessuno）"
+  },
+  {
+    "token": "LA TUA",
+    "expected": "it",
+    "desc": "意大利语'你的'，历史上被误判英语（tua 在意语force，la 需压过法/西停用词）"
+  },
+  {
+    "token": "HA CHIESTO",
+    "expected": "it",
+    "desc": "意大利语'询问了'，历史上被误判英语（chiesto 在意语force）"
+  },
+  {
+    "token": "UNA PERSONA",
+    "expected": "it",
+    "desc": "意大利语'一个人'，历史上被误判英语（una/persona 均在意语force）"
+  },
+  {
+    "token": "EPPURE ECCOLA LÌ",
+    "expected": "it",
+    "desc": "意大利语'然而她就在那儿'，含重音字符 ì，历史上被误判英语"
+  },
+  {
+    "token": "A TANTO COSÌ",
+    "expected": "it",
+    "desc": "意大利语碎句，含重音字符 ì（così），历史上被误判英语"
+  },
+  {
+    "token": "DI PULITO",
+    "expected": "it",
+    "desc": "意大利语'干净的'，历史上被误判英语（di 停用词 + pulito force）"
+  },
+  {
+    "token": "50 ÉTATS",
+    "expected": "fr",
+    "desc": "法语'50个州'，数字剥离后 états 含法语字符 é，历史上被误判英语/数字混判"
+  },
+  {
+    "token": "Un nouveau regard",
+    "expected": "fr",
+    "desc": "法语'一个新视角'，多词短句依赖停用词/NL 判定，历史上被误判英语"
+  },
+  {
+    "token": "BAYONNE",
+    "expected": "fr",
+    "desc": "法国城市巴约讷，历史上被误判英语人名/地名（force命中 bayonne）"
+  },
+  {
+    "token": "DU 15 AU 19 JUILLET",
+    "expected": "fr",
+    "desc": "法语日期'7月15至19日'，du/au 停用词 + juillet 月份force，历史上被误判"
+  },
+  {
+    "token": "ARTS",
+    "expected": "fr",
+    "desc": "法语语境下的'艺术'（VILLE DE ROUBAIX 海报），注意 arts 同时存在于英语force，存在英/法歧义"
+  },
+  {
+    "token": "VILLE DE ROUBAIX",
+    "expected": "fr",
+    "desc": "法语'鲁贝市'，roubaix 城市force + de 停用词，历史上被误判英语人名/地名"
+  },
+  {
+    "token": "Operetten",
+    "expected": "de",
+    "desc": "德语'轻歌剧'，历史上被误判英语（force命中 operetten）"
+  },
+  {
+    "token": "NEWS FOR MUSIC MAKERS",
+    "expected": "en",
+    "desc": "英语杂志栏目，历史上被误判德语（news/music/makers 均在英语force，for 为英语停用词）"
+  },
+  {
+    "token": "it's a violin thing",
+    "expected": "en",
+    "desc": "英语口语句，历史上被误判印尼语（violin/thing 在英语force）"
+  },
+  {
+    "token": "2026",
+    "expected": "zh",
+    "desc": "纯数字年份：第7批规则变更——数字 token 彻底跳过，返回跳过哨兵 zh（ocrBlocks 直接 continue，不计入统计/不画框/不显示「数字 X%」）"
+  },
+  {
+    "token": "BUDGET PRODUCER",
+    "expected": "en",
+    "desc": "英语'预算制片人'，历史上被误判人名/地名，依赖英语词典/NL 判定"
+  },
+  {
+    "token": "LOVE IT",
+    "expected": "en",
+    "desc": "英语'喜欢它'，历史上被误判人名/地名（love 在英语force）"
+  },
+  {
+    "token": "BIG SPLASH",
+    "expected": "en",
+    "desc": "英语'大轰动'，历史上被误判人名/地名（big/splash 均在英语force）"
+  },
+  {
+    "token": "SUMMER VIBE",
+    "expected": "en",
+    "desc": "英语'夏日氛围'，历史上被误判人名/地名（summer/vibe 均在英语force）"
+  },
+  {
+    "token": "épargne",
+    "expected": "fr",
+    "desc": "第8批：法语'储蓄'，含 é（é 为中性字符、italianChars 含 é 曾致误判意语）；靠 frenchForceList 命中判法语，优先于意语启发式"
+  },
+  {
+    "token": "La grande épargne",
+    "expected": "fr",
+    "desc": "第8批：法语短句，la/épargne 均为法语force，含 é(sharedRomanceAccents) 上下文加权，压过 grande 的意语倾向"
+  },
+  {
+    "token": "Economiste",
+    "expected": "fr",
+    "desc": "第8批：法语'经济学家'，词尾 -iste 为法语强信号 + 在 frenchForceList"
+  },
+  {
+    "token": "Economista",
+    "expected": "it",
+    "desc": "第8批：意大利语'经济学家'，词尾 -ista 为意语信号（italianSuffixes 含 ista）"
+  },
+  {
+    "token": "ENTRETIEN",
+    "expected": "fr",
+    "desc": "第8批：法语'访谈/维护'，此前被判英语人名/地名，加入 frenchForceList 后优先法语"
+  },
+  {
+    "token": "Экономика",
+    "expected": "ru",
+    "desc": "第8批：俄语'经济'，含西里尔字母(U+0400–U+04FF)，字符集硬规则强制判俄语 ru"
+  },
+  {
+    "token": "Привет мир",
+    "expected": "ru",
+    "desc": "第8批：俄语'你好世界'，西里尔字符集硬规则判俄语 ru"
+  },
+  {
+    "token": "@#$%&",
+    "expected": "und",
+    "desc": "第8批：纯符号无字母无数字 → 未识别 und（灰色显示，区别于数字跳过）"
+  },
+  {
+    "token": "60.000",
+    "expected": "zh",
+    "desc": "第9批·数字：带千分点/小数的数字 60.000 → 数字跳过哨兵 zh（isNumericToken 剥离 . 和数字后为空），不再被误判印尼语/画框"
+  },
+  {
+    "token": "1,234",
+    "expected": "zh",
+    "desc": "第9批·数字：带千分位逗号 → 数字跳过 zh"
+  },
+  {
+    "token": "50%",
+    "expected": "zh",
+    "desc": "第9批·数字：百分号数字 → 数字跳过 zh"
+  },
+  {
+    "token": "3-4",
+    "expected": "zh",
+    "desc": "第9批·数字：范围连字符数字 → 数字跳过 zh"
+  },
+  {
+    "token": "información",
+    "expected": "es",
+    "desc": "第9批·改动2：西语'信息'，词尾 -ción(含重音) → es（后缀形态学，优先于 tokenLooksPolish 因 ó 误判 pl）"
+  },
+  {
+    "token": "nación",
+    "expected": "es",
+    "desc": "第9批·改动2：西语'国家'，词尾 -ción → es"
+  },
+  {
+    "token": "constitución",
+    "expected": "es",
+    "desc": "第9批·改动2：西语'宪法'，-ción → es"
+  },
+  {
+    "token": "informazione",
+    "expected": "it",
+    "desc": "第9批·改动2：意语'信息'，词尾 -zione(先于 -ione) → it"
+  },
+  {
+    "token": "informação",
+    "expected": "pt",
+    "desc": "第9批·改动2：葡语'信息'，词尾 -ção → pt（优先于因含 ç 被 tokenLooksFrench 误判 fr）"
+  },
+  {
+    "token": "nation",
+    "expected": "en",
+    "desc": "第9批·改动2 英语护栏：纯 ASCII 无变音符 -tion → en，绝不因后缀误判法语（历史 bug：曾判 fr）"
+  },
+  {
+    "token": "action",
+    "expected": "en",
+    "desc": "第9批·改动2 英语护栏：-tion 纯 ASCII → en，不误判 fr"
+  },
+  {
+    "token": "information",
+    "expected": "en",
+    "desc": "第9批·改动2 英语护栏：-tion 纯 ASCII → en，不误判 fr"
+  },
+  {
+    "token": "management",
+    "expected": "en",
+    "desc": "第9批·改动2 英语护栏：-ment 纯 ASCII → en，不误判 fr"
+  },
+  {
+    "page_a": [
+      "informação",
+      "São",
+      "Paulo"
+    ],
+    "page_lang_in": "es",
+    "expected_page_lang": "pt",
+    "desc": "第10批·改动A：页面主语种被 fastText 判成 es，但含 ç/ã(portugueseLockChars) → 强制锁定 pt"
+  },
+  {
+    "page_a": [
+      "Notícias",
+      "França",
+      "Paris"
+    ],
+    "page_lang_in": "fr",
+    "expected_page_lang": "pt",
+    "desc": "第10批·改动A：主语种 fr 但含 ç(França) → 锁 pt（注：ç/法语重叠风险，遵从用户规则，可能误锁真法语页）"
+  },
+  {
+    "page_a": [
+      "información",
+      "canción",
+      "señor"
+    ],
+    "page_lang_in": "es",
+    "expected_page_lang": "es",
+    "desc": "第10批·改动A：西语专有 ñ/ó/á 不在 portugueseLockChars → 保持 es，不误锁 pt"
+  },
+  {
+    "page_a": [
+      "obrigado",
+      "ação",
+      "coração"
+    ],
+    "page_lang_in": "pt",
+    "expected_page_lang": "pt",
+    "desc": "第10批·改动A：主语种已是 pt → 保持 pt 不变"
+  },
+  {
+    "page_a": [
+      "hello",
+      "world"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "en",
+    "desc": "第10批·改动A：主语种 en 不在 {es,fr} 拦截范围 → 即使无锁字符也不改"
+  },
+  {
+    "page_b": [
+      {
+        "text": "LET'S GO!",
+        "pre": "ja"
+      },
+      {
+        "text": "MAKE IT",
+        "pre": "en"
+      }
+    ],
+    "page_lang": "en",
+    "page_conf": 0.6,
+    "expected": [
+      "en",
+      "en"
+    ],
+    "desc": "第10批·改动B：纯 ASCII 拉丁行被误判 ja → 页面主语种 en(conf≥0.4) 归 en；真实 CJK 不受影响"
+  },
+  {
+    "page_b": [
+      {
+        "text": "SUMMER",
+        "pre": "ko"
+      }
+    ],
+    "page_lang": "pt",
+    "page_conf": 0.7,
+    "expected": [
+      "pt"
+    ],
+    "desc": "第10批·改动B：纯 ASCII 行误判 ko，页面主语种 pt(conf≥0.4) → 归 pt"
+  },
+  {
+    "page_b": [
+      {
+        "text": "OK",
+        "pre": "id"
+      }
+    ],
+    "page_lang": null,
+    "page_conf": 0.0,
+    "expected": [
+      "en"
+    ],
+    "desc": "第10批·改动B：纯 ASCII 行误判 id 且页面主语种未知/低置信(<0.4) → 归 en"
+  },
+  {
+    "page_b": [
+      {
+        "text": "HELLO",
+        "pre": "ar"
+      }
+    ],
+    "page_lang": "de",
+    "page_conf": 0.2,
+    "expected": [
+      "en"
+    ],
+    "desc": "第10批·改动B：pageConf<0.4 → 归 en（不用页面主语种）"
+  },
+  {
+    "page_b": [
+      {
+        "text": "こんにちは",
+        "pre": "ja"
+      }
+    ],
+    "page_lang": "en",
+    "page_conf": 0.9,
+    "expected": [
+      "ja"
+    ],
+    "desc": "第10批·改动B：真实日文假名(非纯 ASCII) → isPureAsciiLatinLine=false → 保持 ja，不误伤真实 CJK"
+  },
+  {
+    "page_b": [
+      {
+        "text": "안녕하세요",
+        "pre": "ko"
+      }
+    ],
+    "page_lang": "en",
+    "page_conf": 0.9,
+    "expected": [
+      "ko"
+    ],
+    "desc": "第10批·改动B：真实韩文 → 保持 ko，不受覆盖"
+  },
+  {
+    "page_b": [
+      {
+        "text": "PARIS",
+        "pre": "fr"
+      }
+    ],
+    "page_lang": "en",
+    "page_conf": 0.9,
+    "expected": [
+      "fr"
+    ],
+    "desc": "第10批·改动B：判定语种 fr 不在非拉丁集合 → 不改（只针对 ja/ko/ar/he/th/id）"
+  },
+  {
+    "page_c": [
+      "STRASSE",
+      "GRÖSSE",
+      "MÜNCHEN"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动C：含 ö/ü/ß(germanLockChars) → 强制锁 de，覆盖 fastText 的 en"
+  },
+  {
+    "page_c": [
+      "POSTMODERNE",
+      "DENKMAL",
+      "BIRKHÄUSER"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动C：BIRKHÄUSER 含 Ä → 命中 germanLockChars → 锁 de（用户示例）"
+  },
+  {
+    "page_c": [
+      "ß-text",
+      "ある",
+      "ã-word"
+    ],
+    "page_lang_in": "es",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动C冲突规则：同页既有 ß(德锁) 又有 ã(葡锁) 且 page_lang=es → 德语优先(de)，C 在 A 之前"
+  },
+  {
+    "page_c": [
+      "hello",
+      "world"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "en",
+    "desc": "第11批·改动C：无德语字符/功能词 → 保持原判 en 不变"
+  },
+  {
+    "page_c": [
+      "ação",
+      "coração"
+    ],
+    "page_lang_in": "es",
+    "expected_page_lang": "pt",
+    "desc": "第11批：无德语信号但含葡语锁字符 ç/ã 且 page_lang=es → 葡语锁定 pt（改动A 仍生效）"
+  },
+  {
+    "page_c": [
+      "und",
+      "der",
+      "die",
+      "Denkmal"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动D：无变音符德语页 und/der/die 命中≥2 (deHits≥2) → 覆盖 de"
+  },
+  {
+    "page_c": [
+      "von",
+      "der",
+      "Stadt"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动D：von/der 两个功能词命中 (deHits=2) → 覆盖 de"
+  },
+  {
+    "page_c": [
+      "der",
+      "cat"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "en",
+    "desc": "第11批·改动D：仅 der 一个功能词命中 (deHits==1) → 不直接覆盖 pageLang，保持 en（deHits==1 仅作行级加权，页面级不改）"
+  },
+  {
+    "page_c": [
+      "für",
+      "alle"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第11批·改动C/D协同：für 含 ü → 改动C 字符锁即命中 de（同时也是功能词，双保险）"
+  },
+  {
+    "page_e": [
+      "Berlin",
+      "ist",
+      "schön"
+    ],
+    "expected": [
+      "Berlin",
+      "ist",
+      "schön"
+    ],
+    "desc": "第11批·改动E：容器无 NL(stub 恒 False) → 不剔除任何 token；真机 NLTagger 才会把 Berlin(地名) 剔除，此处仅验证 stub 不误报"
+  },
+  {
+    "page_e": [
+      "Angela",
+      "Merkel"
+    ],
+    "expected": [
+      "Angela",
+      "Merkel"
+    ],
+    "desc": "第11批·改动E：真机应剔除人名 Angela/Merkel，容器 stub 不剔除；仅真机可验证剔除效果，见报告说明"
+  },
+  {
+    "token": "actualmente",
+    "expected": "es",
+    "desc": "第12批·改动F：stopwordsiso 差集唯一西语词，命中 spanishForceList → es"
+  },
+  {
+    "token": "aient",
+    "expected": "fr",
+    "desc": "第12批·改动F：stopwordsiso 差集唯一法语词，命中 frenchForceList → fr"
+  },
+  {
+    "token": "abbastanza",
+    "expected": "it",
+    "desc": "第12批·改动F：stopwordsiso 差集唯一意语词，命中 italianForceList → it"
+  },
+  {
+    "token": "adeus",
+    "expected": "pt",
+    "desc": "第12批·改动F：stopwordsiso 差集唯一葡语词，命中 portugueseForceList → pt"
+  },
+  {
+    "token": "achten",
+    "expected": "de",
+    "desc": "第12批·改动F：stopwordsiso 差集唯一德语词，命中 germanForceList → de"
+  },
+  {
+    "token": "quieres",
+    "expected": "es",
+    "desc": "第13批·改动H：FrequencyWords 差集唯一西语词，命中 spanishForceList → es"
+  },
+  {
+    "token": "vraiment",
+    "expected": "fr",
+    "desc": "第13批·改动H：FrequencyWords 差集唯一法语词，命中 frenchForceList → fr"
+  },
+  {
+    "token": "davvero",
+    "expected": "it",
+    "desc": "第13批·改动H：FrequencyWords 差集唯一意语词，命中 italianForceList → it"
+  },
+  {
+    "token": "acho",
+    "expected": "pt",
+    "desc": "第13批·改动H：FrequencyWords 差集唯一葡语词，命中 portugueseForceList → pt"
+  },
+  {
+    "token": "weiß",
+    "expected": "de",
+    "desc": "第13批·改动H：FrequencyWords 差集唯一德语词(含 ß)，命中 germanForceList → de"
+  },
+  {
+    "token": "gennaio",
+    "expected": "zh",
+    "desc": "第13批·改动I：意语月份名 → 跳过(zh 哨兵)，不计入语种统计"
+  },
+  {
+    "token": "août",
+    "expected": "zh",
+    "desc": "第13批·改动I：法语月份名(含变音符) → 跳过"
+  },
+  {
+    "token": "GENNAIO",
+    "expected": "zh",
+    "desc": "第13批·改动I：月份名全大写变体经 lowercased 归一 → 跳过"
+  },
+  {
+    "token": "17h30",
+    "expected": "zh",
+    "desc": "第13批·改动I：时间格式 17h30 → 跳过"
+  },
+  {
+    "token": "17:30",
+    "expected": "zh",
+    "desc": "第13批·改动I：时间格式 17:30 → 跳过"
+  },
+  {
+    "page_c": [
+      "Uma casa com muito"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "pt",
+    "desc": "第13批·改动K：ptHits=3(uma/com/muito)≥2 且 pageLang=en → 覆盖为 pt"
+  },
+  {
+    "page_c": [
+      "Über uma com mais"
+    ],
+    "page_lang_in": "en",
+    "expected_page_lang": "de",
+    "desc": "第13批·改动K 优先级：同页含德语变音符(改动C锁de) + 葡语功能词 → 德语优先，K 不覆盖"
+  },
+  {
+    "page_j": "LÜGEN",
+    "expected": true,
+    "desc": "第13批·改动J 条件3：含德语变音符 Ü → 保护为语言词汇(不当人名)"
+  },
+  {
+    "page_j": "consulting",
+    "expected": true,
+    "desc": "第13批·改动J 条件1：命中 englishForceList → 保护(不当人名)"
+  },
+  {
+    "page_j": "KENNEDY",
+    "line_upper_run": 0,
+    "expected": false,
+    "desc": "第13批·改动J：普通大写词单独出现(run=0)无保护条件 → 不保护(交 NL 判定)"
+  },
+  {
+    "page_j": "KENNEDY",
+    "line_upper_run": 3,
+    "expected": true,
+    "desc": "第13批·改动J 条件2：同行≥3连续全大写词(书名/标题) → 保护"
+  },
+  {
+    "token": "4,50€",
+    "expected": "zh",
+    "desc": "第14批·改动M：价格（含货币符号€）→ 数字跳过哨兵 zh，不计语种/不画框"
+  },
+  {
+    "token": "N° 27",
+    "expected": "zh",
+    "desc": "第14批·改动M：期刊编号 N° 开头 → 跳过（n° journal + 27 numeric 全跳过）"
+  },
+  {
+    "token": "9772297641006",
+    "expected": "zh",
+    "desc": "第14批·改动M：条形码（纯数字≥8位）→ 跳过"
+  },
+  {
+    "token": "100%",
+    "expected": "zh",
+    "desc": "第14批·改动M：百分比 100% → 数字跳过（确认命中）"
+  },
+  {
+    "token": "www.easybiken.ch",
+    "expected": "zh",
+    "desc": "第14批·改动N：网址（含 .ch TLD）→ 整体跳过"
+  },
+  {
+    "token": "instagram",
+    "expected": "zh",
+    "desc": "第14批·改动N：品牌名 brandSkipList 命中 → 跳过"
+  }
 ]
