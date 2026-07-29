@@ -15076,22 +15076,82 @@ func linguaLang(_ text: String) -> (code: String, confidence: Double)? {
     return result
 }
 
+// 段落级混语切分（detect_multiple_languages_of）：对整页文本做混语分段，
+//   返回「主语种 + 该语种字符覆盖占比」。用于判断整页是否「实质单语」：
+//   即使个别 OCR 行单独看易混，只要整页 ≥ 阈值比例都是同一语种，就可放心把
+//   低置信行归到该主语种（针对封面短词场景）。
+//   不可用 / 超时 / 空结果 → nil。超时 2 秒，与 linguaLang 一致。
+func linguaPageMono(_ text: String) -> (lang: String, ratio: Double)? {
+    guard linguaAvailable, let py = python3Bin, let script = linguaScript else { return nil }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return nil }
+
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: py)
+    proc.arguments = [script, "--multi", text]
+    let outPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = Pipe()
+    do { try proc.run() } catch { return nil }
+    let timedOut = NSLock()
+    var didTimeout = false
+    let watchdog = DispatchWorkItem {
+        if proc.isRunning {
+            timedOut.lock(); didTimeout = true; timedOut.unlock()
+            proc.terminate()
+        }
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: watchdog)
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    watchdog.cancel()
+    timedOut.lock(); let to = didTimeout; timedOut.unlock()
+    if to { return nil }
+    guard let out = String(data: outData, encoding: .utf8),
+          let jd = out.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: jd) as? [String: Any],
+          let segs = obj["segments"] as? [[String: Any]], !segs.isEmpty else { return nil }
+
+    // 按语种累计字符跨度，取占比最高者
+    var spanByLang: [String: Int] = [:]
+    var total = 0
+    for s in segs {
+        guard let lang = (s["lang"] as? String)?.lowercased(),
+              let start = s["start"] as? Int, let end = s["end"] as? Int,
+              end > start else { continue }
+        let span = end - start
+        spanByLang[lang, default: 0] += span
+        total += span
+    }
+    guard total > 0, let top = spanByLang.max(by: { $0.value < $1.value }) else { return nil }
+    return (top.key, Double(top.value) / Double(total))
+}
+
 // lingua 短文本复判：给定文本与既有判定结果 base，返回应覆盖的新结果（否则 nil）。
 //   触发：token 行词数 1...5 且 fastText.prob<0.55；且 base 语种属易混拉丁语种白名单。
 //   决策：lingua 语种 != fastText 语种 且 lingua.confidence > fastText.prob → 采用 lingua。
 //   lingua 结果需在 allowedLangCodes 白名单内（映射不到 App 支持语种则忽略）。
+// lingua 升级为主力：对所有拉丁语系行都触发（移除词数限制和fastText置信度门槛）。
+// 决策逻辑：
+//   1) lingua.confidence >= 0.55 → 直接采信 lingua（高置信主判）
+//   2) lingua.confidence >= 0.45 且 lingua != fastText → 采信 lingua（中置信覆盖fastText）
+//   3) 其余 → 保留既有结果
 func linguaReconsider(_ nlInput: String, base: (String, Bool)) -> (String, Bool)? {
     guard linguaEnabled, linguaAvailable else { return nil }
-    // 只对易混拉丁语种既有结果复判，避免误伤非拉丁脚本硬命中。
+    // 只对拉丁语系行复判，非拉丁脚本（ru/ja/ko/th/ar/zh）硬规则已命中，不干预
     guard linguaReconsiderLangs.contains(base.0) else { return nil }
     let toks = latinTokens(nlInput).filter { !isNumericToken($0) }
-    guard toks.count >= 1 && toks.count <= 5 else { return nil }
-    let ft = fastTextLang(nlInput)
-    let ftProb = ft?.prob ?? 0
-    guard ftProb < 0.55 else { return nil }
+    guard toks.count >= 1 else { return nil }  // 无拉丁词则不触发
     guard let lg = linguaLang(nlInput) else { return nil }
     guard allowedLangCodes.contains(lg.code) else { return nil }
-    if lg.code != (ft?.code ?? base.0) && lg.confidence > ftProb {
+    let ft = fastTextLang(nlInput)
+    let ftProb = ft?.prob ?? 0.0
+    // 高置信：lingua >= 0.55，直接采信（无论 fastText 怎么说）
+    if lg.confidence >= 0.55 {
+        return (lg.code, true)
+    }
+    // 中置信：lingua >= 0.45 且与 fastText 不一致，采信 lingua
+    if lg.confidence >= 0.45 && lg.code != (ft?.code ?? base.0) {
         return (lg.code, true)
     }
     return nil
@@ -15725,9 +15785,27 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         var pageConf: Double = 0
         if parts.count >= 2 {
             let pageText = parts.joined(separator: " ")
-            if let pageFt = fastTextLang(pageText), allowedLangCodes.contains(pageFt.code) {
+            // 整图主语种：优先用 lingua（专为短/中文本设计，比 fastText 更准）
+            if let pageLg = linguaLang(pageText), allowedLangCodes.contains(pageLg.code), pageLg.confidence >= 0.35 {
+                pageLang = pageLg.code
+                pageConf = pageLg.confidence
+            } else if let pageFt = fastTextLang(pageText), allowedLangCodes.contains(pageFt.code) {
+                // lingua 无结果或置信度不足时 fastText 兜底
                 pageLang = pageFt.code
                 pageConf = pageFt.prob
+            }
+        }
+
+        // ---- 段落级混语切分：判断整页是否「实质单语」----
+        //   用 lingua detect_multiple_languages_of 对整页做混语分段，取主语种字符覆盖占比。
+        //   ratio≥0.85 视为「整页实质单语」：即使个别 OCR 行单独看易混（封面短词），
+        //   也可放心把中低置信行归到该主语种。仅作为下方低置信行纠错的「放宽信号」，
+        //   不直接改写 pageLang（避免与 de/pt 锁定链冲突）。
+        var pageMonoLang: String? = nil
+        if parts.count >= 2 {
+            let pageText = parts.joined(separator: " ")
+            if let mono = linguaPageMono(pageText), allowedLangCodes.contains(mono.lang), mono.ratio >= 0.85 {
+                pageMonoLang = mono.lang
             }
         }
 
@@ -15788,13 +15866,23 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
 
         // ---- 第9批·改动1：页面级低置信行纠错（仅当 pageLang 已知且 pageConf≥0.4）----
         var result = bs
-        if let pl = pageLang, pageConf >= 0.4 {          // pageConf<0.4：真正混语页面 → 不纠错
+        if let pl = pageLang, pageConf >= 0.35 {          // lingua 置信度更可靠，门槛可以更低
             result = bs.map { b in
                 guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
                 if b.lang == pl { return b }
                 if blockHardHit(b.text) { return b }     // 硬命中豁免
                 let ftP = fastTextLang(b.text)?.prob ?? 0
                 let nlP = nlDetect(b.text)?.prob ?? 0
+                // 行级 lingua 复判：若 lingua 对该行也判为 pageLang 则直接覆盖（无论 ftP/nlP）
+                if let linR = linguaLang(b.text), linR.code == pl, linR.confidence >= 0.40 {
+                    return Block(text: b.text, box: b.box, lang: pl)
+                }
+                // 段落级混语切分放宽：整页实质单语(pageMonoLang==pl)时，把覆盖门槛从
+                //   0.45 放宽到 0.60 —— 封面短词行单独易混，但整页已确认单语，可归主语种。
+                if pageMonoLang == pl && ftP < 0.60 && nlP < 0.60 {
+                    return Block(text: b.text, box: b.box, lang: pl)
+                }
+                // 原有低置信行覆盖逻辑保留（ft<0.45 且 nl<0.45）
                 if ftP < 0.45 && nlP < 0.45 {            // 该块本身低置信 → 归页面主语种
                     return Block(text: b.text, box: b.box, lang: pl)
                 }
