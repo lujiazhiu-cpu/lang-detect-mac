@@ -8,7 +8,7 @@
 # 用法（在 macOS 终端粘贴运行一次即可）：
 #   bash /private/tmp/aime-agent-shared-dir/cad26f8ba7f4/lang-detect-mac/build_app.sh
 #
-# 产物：~/Applications/语种识别.app
+# 产物：/Applications/语种识别.app
 #
 
 set -e
@@ -19,7 +19,7 @@ RES_DIR="$SRC_DIR/Resources"
 ICON_1024="$RES_DIR/AppIcon_1024.png"
 APP_NAME="语种识别"
 EXEC_NAME="语种识别"
-DEST_DIR="$HOME/Applications"
+DEST_DIR="/Applications"
 APP="$DEST_DIR/$APP_NAME.app"
 
 echo "==================================================="
