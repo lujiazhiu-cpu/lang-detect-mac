@@ -15409,9 +15409,15 @@ func linguaReconsider(_ nlInput: String, base: (String, Bool)) -> (String, Bool)
         let hasUmlaut = nlInput.contains(where: { "äöüßÄÖÜ".contains($0) })
         let germanish = hasUmlaut || hasGermanFeature(toks)
         if !germanish {
+            // lingua 认为是别的在册语种 → 采信 lingua（去伪德语）
             if allowedLangCodes.contains(lg.code) && lg.code != "de" && lg.confidence >= 0.30 {
                 return (lg.code, true)
             }
+            // lingua 也认为是德语(中高置信) → 保留 de（修复无形态特征德语词被误杀为 und）
+            if lg.code == "de" && lg.confidence >= 0.55 {
+                return ("de", true)
+            }
+            // 无德语形态特征、lingua 也判不出具体语种 → 退 und
             return ("und", false)
         }
     }
@@ -15483,6 +15489,19 @@ func detectBlockLang(_ text: String, prevContext: String? = nil, nextContext: St
     //   放在既有单块判定出口、写缓存之前；不可用/超时/异常时 linguaReconsider 返回 nil，保留原结果。
     let nlKey = normalizedKey(text)
     if let lg = linguaReconsider(nlKey, base: result) { result = lg }
+    // 补丁B：意大利语省音特征（dell'/nell'/all'/un' 等，均为意语专有，法语不用）→ 判意大利语
+    let loweredIt = text.lowercased()
+    for p in ["dell\'", "nell\'", "all\'", "dall\'", "sull\'", "coll\'", "quell\'", "un\'", "sant\'"] {
+        if loweredIt.contains(p) { result = ("it", true); break }
+    }
+    // 补丁A：全大写词若仍为 name/und，且 fastText 高置信(≥0.5)给出在册语种 → 采信（修 GASTRAUM 型全大写德/意语词）
+    if result.0 == "name" || result.0 == "und" {
+        let hasLower = text.contains { $0.isLowercase }
+        let hasLetter = text.contains { $0.isLetter }
+        if hasLetter && !hasLower, let ft = fastTextLang(text), allowedLangCodes.contains(ft.code), ft.prob >= 0.5 {
+            result = (ft.code, true)
+        }
+    }
     detectCacheLock.lock()
     detectCache[key] = result
     detectCacheLock.unlock()
@@ -16773,6 +16792,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "好的")
         alert.runModal()
     }
+}
+
+// ==== 离线文本自测入口（--selftest <tsv>）：用真实判定链跑黄金语料，秒出准确率，免截图 ====
+if CommandLine.arguments.contains("--selftest") {
+    let a = CommandLine.arguments
+    guard let idx = a.firstIndex(of: "--selftest"), idx + 1 < a.count,
+          let content = try? String(contentsOfFile: a[idx + 1], encoding: .utf8) else {
+        FileHandle.standardError.write("用法: <bin> --selftest <cases.tsv>\n".data(using: .utf8)!)
+        exit(2)
+    }
+    var total = 0, pass = 0
+    var fails: [String] = []
+    for raw in content.split(separator: "\n", omittingEmptySubsequences: true) {
+        let s = String(raw)
+        if s.hasPrefix("#") { continue }
+        let parts = s.components(separatedBy: "\t")
+        if parts.count < 2 { continue }
+        let text = parts[0]
+        let expected = parts[1].trimmingCharacters(in: .whitespaces)
+        let got = detectBlockLang(text).0
+        total += 1
+        if got == expected { pass += 1 }
+        else { fails.append("  \u{2717} [\(text)] \u{671F}\u{671B}=\(expected) \u{5B9E}\u{5F97}=\(got)") }
+    }
+    let pct = total > 0 ? Double(pass) * 100.0 / Double(total) : 0
+    print(String(format: "\u{51C6}\u{786E}\u{7387}: %d/%d = %.1f%%", pass, total, pct))
+    if !fails.isEmpty { print("\u{5931}\u{8D25}\u{660E}\u{7EC6}:"); for f in fails { print(f) } }
+    exit(0)
 }
 
 let app = NSApplication.shared

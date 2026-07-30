@@ -11,3 +11,6 @@ Resources/lid.176.bin
 
 *.bak_*
 *.bak
+
+*.bak_*
+/tmp_selftest*
