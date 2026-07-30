@@ -14916,7 +14916,7 @@ let fastTextModel: String? = fastTextEnabled ? resolveFastTextModel() : nil
 let fastTextAvailable: Bool = (fastTextBin != nil && fastTextModel != nil)
 
 // fastText 结果缓存（含负缓存），避免对同一文本重复启动进程
-struct FTCacheEntry { let value: (code: String, prob: Double)? }
+struct FTCacheEntry { let value: (code: String, prob: Double)?; let prob2: Double? }  // OPT4: prob2 = Top2 概率，供 margin 判定
 let ftCacheLock = NSLock()
 var ftCache: [String: FTCacheEntry] = [:]
 
@@ -14968,7 +14968,7 @@ func ftLabelToCode(_ label: String) -> String? {
 let ftDaemonEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_FT_DAEMON"] == nil
 
 final class FastTextDaemon {
-    enum QueryResult { case dead; case value((code: String, prob: Double)?) }
+    enum QueryResult { case dead; case value((code: String, prob: Double, prob2: Double)?) }  // OPT4: 携带 Top2
     private let lock = NSLock()
     private var proc: Process?
     private var writeH: FileHandle?
@@ -14983,7 +14983,7 @@ final class FastTextDaemon {
         guard ftDaemonEnabled, let bin = fastTextBin, let model = fastTextModel else { dead = true; return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["predict-prob", model, "-", "1"]
+        p.arguments = ["predict-prob", model, "-", "2"]  // OPT4: top-2 供 margin 判定
         let inPipe = Pipe(); let outPipe = Pipe()
         p.standardInput = inPipe
         p.standardOutput = outPipe
@@ -15032,20 +15032,21 @@ final class FastTextDaemon {
         }
         if sem.wait(timeout: .now() + 4) == .timedOut { markDeadLocked(); return .dead }
         guard let o = out else { markDeadLocked(); return .dead }
-        // 输出形如: "__label__it 0.8734"
+        // 输出形如: "__label__it 0.8734 __label__fr 0.0210"（predict-prob k=2）
         let parts = o.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
         guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
               let prob = Double(parts[1]) else { return .value(nil) }
-        return .value((code, prob))
+        let prob2 = parts.count >= 4 ? (Double(parts[3]) ?? 0.0) : 0.0  // OPT4: Top2 概率
+        return .value((code, prob, prob2))
     }
 }
 let ftDaemon = FastTextDaemon()
 
 // 旧「单次子进程」实现，作为守护进程失效时的兜底（行为与升级前完全一致）。
-func fastTextLangLegacy(_ text: String, bin: String, model: String) -> (code: String, prob: Double)? {
+func fastTextLangLegacy(_ text: String, bin: String, model: String) -> (code: String, prob: Double, prob2: Double)? {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: bin)
-    proc.arguments = ["predict-prob", model, "-", "1"]
+    proc.arguments = ["predict-prob", model, "-", "2"]  // OPT4: top-2 供 margin 判定
     let inPipe = Pipe(); let outPipe = Pipe()
     proc.standardInput = inPipe
     proc.standardOutput = outPipe
@@ -15061,7 +15062,41 @@ func fastTextLangLegacy(_ text: String, bin: String, model: String) -> (code: St
     let parts = out.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
     guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
           let prob = Double(parts[1]) else { return nil }
-    return (code, prob)
+    let prob2 = parts.count >= 4 ? (Double(parts[3]) ?? 0.0) : 0.0  // OPT4: Top2 概率
+    return (code, prob, prob2)
+}
+
+// OPT2: fastText 专用输入清洗 —— 仅作用于送入 fastText 的副本，绝不影响 lingua / NL
+//   （二者仍使用原始文本）。清洗步骤：
+//     1) 转小写；
+//     2) 去除 URL / www / Email；
+//     3) 仅保留 Unicode 字母与空格（变音符号如 é ñ ß 属字母被保留），数字 / Emoji /
+//        标点 / 特殊符号 / CSS 值等一律替换为空格；
+//     4) 多空格收缩为一个并去首尾空白。
+//   清洗后为空串时返回原文本（由调用方回退，避免把有效行洗成空导致漏判）。
+func fastTextNormalize(_ text: String) -> String {
+    // 注意：不做全局小写化 —— lid.176 的字符 n-gram 特征区分大小写，
+    //   对全大写词（如 GASTRAUM）小写化会显著降低其命中概率导致漏判。
+    //   URL/Email 剥离改为大小写不敏感匹配，兼顾大写写法。
+    var s = text
+    // 去 URL / www（大小写不敏感）
+    s = s.replacingOccurrences(of: #"https?://[^\s]+"#, with: " ", options: [.regularExpression, .caseInsensitive])
+    s = s.replacingOccurrences(of: #"www\.[^\s]+"#, with: " ", options: [.regularExpression, .caseInsensitive])
+    // 去 Email（大小写不敏感）
+    s = s.replacingOccurrences(of: #"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"#, with: " ", options: [.regularExpression, .caseInsensitive])
+    // 仅保留 Unicode 字母与空格；数字 / 符号 / Emoji → 空格
+    var scalars = String.UnicodeScalarView()
+    for sc in s.unicodeScalars {
+        if sc == " " || CharacterSet.letters.contains(sc) {
+            scalars.append(sc)
+        } else {
+            scalars.append(" ")
+        }
+    }
+    // 收缩空白 + 去首尾
+    return String(scalars)
+        .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" })
+        .joined(separator: " ")
 }
 
 // 调用 fastText 判定单块文本语种；不可用/失败/超时 → nil。
@@ -15073,16 +15108,54 @@ func fastTextLang(_ text: String) -> (code: String, prob: Double)? {
     if let cached = ftCache[key] { ftCacheLock.unlock(); return cached.value }
     ftCacheLock.unlock()
 
-    let result: (code: String, prob: Double)?
-    switch ftDaemon.query(text) {
-    case .value(let v):
-        result = v
-    case .dead:
-        result = fastTextLangLegacy(text, bin: bin, model: model)
-    }
+    // OPT2: 仅对送入 fastText 的副本做清洗；清洗后为空则回退原文本。
+    let ftText: String = {
+        let cleaned = fastTextNormalize(text)
+        return cleaned.isEmpty ? text : cleaned
+    }()
 
-    ftCacheLock.lock(); ftCache[key] = FTCacheEntry(value: result); ftCacheLock.unlock()
+    // OPT4: 取回 Top1+Top2 完整结果；对外仍返回 Top1(code,prob)，Top2 单独缓存供 margin 判定。
+    let full: (code: String, prob: Double, prob2: Double)?
+    switch ftDaemon.query(ftText) {
+    case .value(let v):
+        full = v
+    case .dead:
+        full = fastTextLangLegacy(ftText, bin: bin, model: model)
+    }
+    let result: (code: String, prob: Double)? = full.map { ($0.code, $0.prob) }
+
+    ftCacheLock.lock(); ftCache[key] = FTCacheEntry(value: result, prob2: full?.prob2); ftCacheLock.unlock()
     return result
+}
+
+// OPT4: fastText 混淆态判定 —— Top1<0.75 或 (Top1-Top2)<0.25 视为「混淆风险」，
+//   需触发 lingua 二次裁决。返回 nil 表示 fastText 不可用或无结果（此时按既有链路处理）。
+//   注意：本函数依赖 fastTextLang 先行填充缓存（含 prob2），故内部先调用 fastTextLang。
+let FT_MARGIN_TOP1_MIN: Double = 0.75   // Top1 低于此值 → 混淆
+let FT_MARGIN_GAP_MIN: Double = 0.25    // Top1-Top2 差值低于此值 → 混淆
+func fastTextConfused(_ text: String) -> Bool? {
+    guard let top1 = fastTextLang(text) else { return nil }  // 填充缓存并取 Top1
+    let key = normalizedKey(text)
+    ftCacheLock.lock()
+    let prob2 = ftCache[key]?.prob2 ?? 0.0
+    ftCacheLock.unlock()
+    // Top1 偏低，或与 Top2 过于接近 → 混淆
+    return top1.prob < FT_MARGIN_TOP1_MIN || (top1.prob - prob2) < FT_MARGIN_GAP_MIN
+}
+
+// OPT5: 拼写错误率 —— 对给定拉丁词逐一查指定语种的 macOS 系统拼写词典，
+//   返回错误率 = 未命中词数 / 总词数。用于「fastText 与 lingua 分歧」时的拼写裁决。
+//   language 会经 resolveSpellLanguage 映射到实际安装的词典变体（如 pt → pt_BR）；
+//   该语种无词典时返回 1.0（视为全错，不参与胜出），确保仅在两侧都有词典时才裁决。
+func spellErrorRate(_ tokens: [String], language: String) -> Double {
+    guard let lang = resolveSpellLanguage([language]) else { return 1.0 }
+    var valid = 0, total = 0
+    for tok in tokens where tok.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) {
+        total += 1
+        // spellCandidates 兼容全大写词（GASTRAUM → Gastraum）
+        if spellCandidates(tok).contains(where: { spellValid($0, language: lang) }) { valid += 1 }
+    }
+    return total > 0 ? Double(total - valid) / Double(total) : 1.0
 }
 
 // ============================================================
@@ -15393,6 +15466,10 @@ func linguaReconsider(_ nlInput: String, base: (String, Bool)) -> (String, Bool)
     guard isLatinLang || isNameOrUnd else { return nil }
     guard let lg = linguaLang(nlInput) else { return nil }
     let ft = fastTextLang(nlInput)
+    // OPT4: fastText margin 触发 —— Top1<0.75 或 (Top1-Top2)<0.25 视为「混淆风险」。
+    //   混淆时对 lingua 二次裁决放宽门槛（更信 lingua）；非混淆（fastText 高置信且领先明显）
+    //   时维持保守门槛（更信 fastText），避免误伤 fastText 本已正确的高置信判定。
+    let ftConfused = fastTextConfused(nlInput) ?? false
 
     // A) name/und 覆盖：仅在 lingua 高置信(≥0.90)时改判为具体在册语种，
     //    避免误伤真正的人名/地名（其 lingua 置信通常达不到 0.90）。
@@ -15423,12 +15500,37 @@ func linguaReconsider(_ nlInput: String, base: (String, Bool)) -> (String, Bool)
     }
 
     guard allowedLangCodes.contains(lg.code) else { return nil }
-    // 高置信：lingua >= 0.55，直接采信（无论 fastText 怎么说）
-    if lg.confidence >= 0.55 {
+    // OPT4 护栏：-tion/-sion 结尾的拉丁借词（nation/action/information…）在英语与
+    //   法/西/意/葡之间拼写完全一致，属经典「同形假朋友」，lingua 常系统性偏向罗曼语。
+    //   当 base 已判 en 且为单 token 的此类词时，禁止 margin 复判把它翻成罗曼语，
+    //   避免误伤本就正确的英语判定（带变音符的 -ción/-ção/-zione 不受影响，非纯 ASCII 后缀）。
+    if base.0 == "en", toks.count == 1,
+       let only = toks.first?.lowercased(),
+       only.hasSuffix("tion") || only.hasSuffix("sion"),
+       ["fr", "es", "it", "pt"].contains(lg.code) {
+        return nil
+    }
+    // OPT5: fastText 与 lingua 分歧时用 macOS 系统拼写词典裁决 —— 分别统计两候选语种
+    //   在本文本上的拼写错误率，错误率明显更低者（差值 > 0.20）胜出。仅当两候选都在白名单内、
+    //   彼此不同、且都装有词典时才裁决；否则维持既有阈值逻辑，避免噪声导致乱翻。
+    if let ftc = ft?.code, allowedLangCodes.contains(ftc), allowedLangCodes.contains(lg.code),
+       ftc != lg.code, resolveSpellLanguage([ftc]) != nil, resolveSpellLanguage([lg.code]) != nil {
+        let errFt = spellErrorRate(toks, language: ftc)
+        let errLg = spellErrorRate(toks, language: lg.code)
+        if errLg + 0.20 < errFt { return (lg.code, true) }   // lingua 候选拼写更干净 → 采信 lingua
+        if errFt + 0.20 < errLg { return (ftc, true) }        // fastText 候选拼写更干净 → 采信 fastText
+    }
+    // OPT4: 依 fastText 是否混淆动态调整 lingua 采信门槛：
+    //   混淆 → 高置信 0.45 / 中置信 0.35（更激进地采信 lingua）；
+    //   非混淆 → 高置信 0.55 / 中置信 0.45（保守，维持原行为）。
+    let linguaTrustHigh = ftConfused ? 0.45 : 0.55
+    let linguaTrustMid  = ftConfused ? 0.35 : 0.45
+    // 高置信：lingua 达标直接采信（无论 fastText 怎么说）
+    if lg.confidence >= linguaTrustHigh {
         return (lg.code, true)
     }
-    // 中置信：lingua >= 0.45 且与 fastText 不一致，采信 lingua
-    if lg.confidence >= 0.45 && lg.code != (ft?.code ?? base.0) {
+    // 中置信：lingua 达标且与 fastText 不一致时采信 lingua
+    if lg.confidence >= linguaTrustMid && lg.code != (ft?.code ?? base.0) {
         return (lg.code, true)
     }
     return nil
@@ -15558,6 +15660,45 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
     if nonLatinTotal >= latinLetters, let top = scriptCount.max(by: { $0.value < $1.value }) {
         return (top.key, true)
     }
+    // OPT3: 独占字符 / 变音符号强拦截表（脚本判定之后、fastText 主判之前）。
+    //   命中即锁定语种，绕过 fastText/lingua 的易混判定。策略：
+    //     · 目标语种在 allowedLangCodes 内 → 硬出该语种结果；
+    //     · App 不支持的语种（土耳其/北欧/捷克-斯洛伐克-克罗地亚）命中其独占字符 → 判 und
+    //       （与挪威语黑名单一致：非目标语种不强归白名单，避免被就近误判成 de/en 等）。
+    //   冲突规避：æ/œ 属法语 frenchTendChars，故北欧集合排除 æ；波兰 ż(U+017C)/ź(U+017A)
+    //   与捷克 ž(U+017E) 码位不同，互不干扰；pl 规则先于 cs/sk/hr 规则，保证波兰词正确归 pl。
+    // 德语独占：ß / ẞ
+    if allowedLangCodes.contains("de"), t.contains(where: { $0 == "ß" || $0 == "ẞ" }) {
+        return ("de", true)
+    }
+    // 西语独占：ñ / Ñ
+    if allowedLangCodes.contains("es"), t.contains(where: { $0 == "ñ" || $0 == "Ñ" }) {
+        return ("es", true)
+    }
+    // 葡语倾向：ã / õ（越南语也用 ã，含越南语专属字符时让给越南语，保守不抢）
+    if allowedLangCodes.contains("pt"),
+       t.contains(where: { $0 == "ã" || $0 == "õ" || $0 == "Ã" || $0 == "Õ" }),
+       !hasVietnameseChar(t) {
+        return ("pt", true)
+    }
+    // 波兰语独占：ł/Ł ś/Ś ź/Ź ż/Ż（App 支持 pl，直接硬出）
+    if allowedLangCodes.contains("pl"),
+       t.contains(where: { "łŁśŚźŹżŻ".contains($0) }) {
+        return ("pl", true)
+    }
+    // 以下语种 App 不支持 → 命中其独占字符判「未识别」und（不强归白名单）：
+    //   土耳其语：ğ/Ğ ı(点上i小写) İ(带点大写I) ş/Ş
+    if t.contains(where: { "ğĞışŞ".contains($0) }) || t.contains("İ") {
+        return ("und", false)
+    }
+    //   北欧语系（丹/挪/瑞）：å/Å ø/Ø（排除 æ/Æ：法语也用）
+    if t.contains(where: { $0 == "å" || $0 == "Å" || $0 == "ø" || $0 == "Ø" }) {
+        return ("und", false)
+    }
+    //   捷克 / 斯洛伐克 / 克罗地亚语：č/Č š/Š ž/Ž
+    if t.contains(where: { "čČšŠžŽ".contains($0) }) {
+        return ("und", false)
+    }
     // ③ 拉丁字母为主：短文本（尤其是单词专名/缩写/编号）NaturalLanguage 极易误判
     //    （如 Rosengarten→荷兰语、SODDY→斯洛伐克语、Mo.→印尼语）。
     let letters = latinLetters
@@ -15659,10 +15800,22 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
             }
             if one.contains(where: { portugueseTendChars.contains($0) }) { return ("pt", true) } // ã/õ → 葡
             if one.contains(where: { frenchTendChars.contains($0) })     { return ("fr", true) } // œ/æ/à/è → 法
+            // OPT1: short-text early skip —— 文本长度 <5 字符时 fastText 极不可靠
+            //   （fastText/lid.176 对超短文本特征稀疏，易乱判小语种）。此处已在上方跑过
+            //   全部确定性硬规则（forceWords / 字符特征 / 词尾形态学）并让其优先返回；对仍
+            //   未认领的超短 token，改用 lingua 短文本判定「替代」fastText：lingua 置信达标
+            //   （白名单内且 ≥0.50）即采信，其余情况直接跳过 fastText、下沉到拼写词典/und 兜底。
+            let isShortToken = one.count < 5
+            if isShortToken {
+                if let lg = linguaLang(one), allowedLangCodes.contains(lg.code), lg.confidence >= 0.50 {
+                    return (lg.code, true)
+                }
+            }
             // ===== fastText 主判（在字符特征/forceWords 之后、Apple NL 之前）=====
             //   方向2：≤4 字符短词不单独送 fastText（易误判），改用「前词+当前词+后词」
             //   拼接串作为上下文整体判定；无上下文时退回对该词本身判定。
             //   prob ≥ FASTTEXT_PRIMARY_PROB(0.35) 且在白名单内 → 直接采信。
+            //   OPT1：isShortToken 时不走 fastText（已在上方交给 lingua 处理）。
             let ftInput: String = {
                 if one.count <= 4 {
                     let ctx = [prevToken, one, nextToken]
@@ -15672,7 +15825,7 @@ func detectBlockLangImpl(_ text: String, prevToken: String? = nil, nextToken: St
                 }
                 return nlInput
             }()
-            if let ft = fastTextLang(ftInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
+            if !isShortToken, let ft = fastTextLang(ftInput), ft.prob >= FASTTEXT_PRIMARY_PROB,
                allowedLangCodes.contains(ft.code) {
                 // 第6批（低优先级）：极小字碎词乱判小语种防护。
                 //   当 token 为纯 ASCII 且无变音符、词长 ≤5、且置信度 <0.5，而 fastText 又输出了
@@ -15867,7 +16020,45 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
     let handler = VNImageRequestHandler(cgImage: cg, options: [:])
     try? handler.perform([req])
     sem.wait()
-    return blocks
+    return applyPagePrior(blocks)
+}
+
+// OPT6: 页面级贝叶斯先验加权 —— 整页扫描统计主语种分布（按字符数加权），把「主语种」作为
+//   先验。对「模糊短块」（拉丁语系、词数≤2、判定与主语种不符）施加先验：除非该块自身的
+//   似然（lingua top-1）强烈支持其当前判定，否则拉回主语种。介入前置条件严格：主语种需占
+//   实义拉丁文本的绝对多数（≥0.6）且至少 3 个确信主语种块，样本不足时不介入，避免误伤。
+//   说明：本层作用于整页 OCR 流程；逐块自测（--selftest）不含页面上下文、不经过 ocrBlocks，
+//   故不改变自测数值，仅提升真实截图整页语种一致性。
+let pagePriorLatinLangs: Set<String> = ["en", "fr", "de", "es", "it", "pt"]
+func applyPagePrior(_ blocks: [Block]) -> [Block] {
+    // 统计各拉丁语种按字符数加权的占比与确信块数
+    var weightByLang: [String: Int] = [:]
+    var countByLang: [String: Int] = [:]
+    for b in blocks where pagePriorLatinLangs.contains(b.lang) {
+        weightByLang[b.lang, default: 0] += max(1, b.text.count)
+        countByLang[b.lang, default: 0] += 1
+    }
+    let totalWeight = weightByLang.values.reduce(0, +)
+    guard totalWeight > 0,
+          let dominant = weightByLang.max(by: { $0.value < $1.value }) else { return blocks }
+    let dominantShare = Double(dominant.value) / Double(totalWeight)
+    // 主语种需绝对多数且样本足够，否则不介入（先验不足以可靠）
+    guard dominantShare >= 0.6, (countByLang[dominant.key] ?? 0) >= 3 else { return blocks }
+    let dominantLang = dominant.key
+    // 第二遍：对与主语种不符的模糊短块施加先验
+    return blocks.map { block in
+        guard block.lang != dominantLang, pagePriorLatinLangs.contains(block.lang) else { return block }
+        let toks = latinTokens(block.text).filter { !isNumericToken($0) }
+        guard toks.count >= 1, toks.count <= 2 else { return block }   // 仅模糊短块
+        let likelihood = linguaLang(block.text)
+        // 该块自身似然强烈支持当前判定(≥0.50) → 保留，先验不足以推翻
+        if let lk = likelihood, lk.code == block.lang, lk.confidence >= 0.50 { return block }
+        // lingua 支持主语种，或该块判定本就不牢靠(<0.45) → 施加先验，改判为主语种
+        if likelihood?.code == dominantLang || (likelihood?.confidence ?? 0.0) < 0.45 {
+            return Block(text: block.text, box: block.box, lang: dominantLang)
+        }
+        return block
+    }
 }
 
 // ---- 同语种连续行合并为段落标注框（仅用于绘制，不改变占比统计口径）----
