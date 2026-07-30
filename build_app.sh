@@ -8,7 +8,7 @@
 # 用法（在 macOS 终端粘贴运行一次即可）：
 #   bash /private/tmp/aime-agent-shared-dir/cad26f8ba7f4/lang-detect-mac/build_app.sh
 #
-# 产物：~/Applications/语种识别.app
+# 产物：/Applications/语种识别.app
 #
 
 set -e
@@ -19,7 +19,7 @@ RES_DIR="$SRC_DIR/Resources"
 ICON_1024="$RES_DIR/AppIcon_1024.png"
 APP_NAME="语种识别"
 EXEC_NAME="语种识别"
-DEST_DIR="$HOME/Applications"
+DEST_DIR="/Applications"
 APP="$DEST_DIR/$APP_NAME.app"
 
 echo "==================================================="
@@ -73,6 +73,15 @@ chmod +x "$APP/Contents/MacOS/$EXEC_NAME"
 echo "[5/7] 放入菜单栏图标 ..."
 [ -f "$RES_DIR/menubar_icon.png" ]    && cp "$RES_DIR/menubar_icon.png"    "$APP/Contents/Resources/"
 [ -f "$RES_DIR/menubar_icon@2x.png" ] && cp "$RES_DIR/menubar_icon@2x.png" "$APP/Contents/Resources/"
+
+# 4a) 把 lingua 主力引擎脚本打包进 App 包内（Contents/Resources），使 App 自包含、
+#     不再依赖 ~/lang-detect-mac 目录（resolveLinguaScript 优先用 Bundle 内路径）
+if [ -f "$SRC_DIR/lingua_detect.py" ]; then
+    cp "$SRC_DIR/lingua_detect.py" "$APP/Contents/Resources/"
+    echo "     ✅ 已内置 lingua 引擎脚本 lingua_detect.py（App 自包含，不依赖外部目录）"
+else
+    echo "     ⚠️ 未发现 lingua_detect.py —— lingua 引擎将退回外部目录查找"
+fi
 
 # 4b) 若已准备 fastText 模型（见 setup_fasttext.sh），一并打进 .app，使其自带补充验证层
 if [ -f "$RES_DIR/lid.176.bin" ]; then
@@ -132,8 +141,23 @@ $ICON_KEY
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "     （ad-hoc 签名跳过，不影响使用）"
-xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+# 先剥离所有扩展属性（quarantine / provenance 等），再签名，避免签名后被污染导致「已损坏」
+xattr -cr "$APP" 2>/dev/null || true
+if codesign --force --deep --sign - "$APP" 2>/tmp/langbar_sign.log; then
+    echo "     ✅ ad-hoc 签名完成"
+else
+    echo "❌ 签名失败，日志如下："; cat /tmp/langbar_sign.log; exit 1
+fi
+# 再次剥离（签名过程可能重新写入属性），并校验签名封印完整（防止「已损坏或不完整」）
+xattr -cr "$APP" 2>/dev/null || true
+if ! codesign --verify --deep --strict --verbose=2 "$APP" 2>/tmp/langbar_verify.log; then
+    echo "❌ 签名校验未通过（App 可能损坏或不完整），日志如下："; cat /tmp/langbar_verify.log; exit 1
+fi
+echo "     ✅ 签名校验通过：valid on disk"
+# 校验可执行文件为完整 Mach-O，避免半成品被打包
+if ! file "$APP/Contents/MacOS/$EXEC_NAME" | grep -q "Mach-O"; then
+    echo "❌ 可执行文件不是有效的 Mach-O（编译产物不完整）"; exit 1
+fi
 touch "$APP"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
     -f "$APP" 2>/dev/null || true

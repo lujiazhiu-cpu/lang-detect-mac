@@ -1,0 +1,30 @@
+[
+  {"token": "che ci piace sentir cantare", "expected": "it", "desc": "组1 意语宪法海报整句，历史误判fr"},
+  {"token": "LA CARTA", "expected": "it", "desc": "组1 意语'宪章'，正确it"},
+  {"token": "Costituzione della Repubblica Italiana", "expected": "it", "desc": "组1 意语'意大利共和国宪法'，正确it"},
+
+  {"token": "LA TERRAZZA", "expected": "it", "desc": "组2 意语电影名《露台》，历史误判fr"},
+  {"token": "Ettore Scola 1980", "expected": "it", "desc": "组2 意语导演名+年份，历史误判en(人名/地名)"},
+  {"token": "testimanifesti.it", "expected": "it", "desc": "组2 意语网站域名，历史误判en"},
+  {"token": "A che ora è la rivoluzione, signora?", "expected": "it", "desc": "组2 意语整句，正确it"},
+  {"token": "Già mangiati?", "expected": "it", "desc": "组2 意语整句，正确it"},
+
+  {"token": "CAMPAGNES", "expected": "fr", "desc": "组3 法语'战役/乡野'，历史误判en"},
+  {"token": "LA GUERRE DES MONDES", "expected": "fr", "desc": "组3 法语'世界大战'，历史误判en(人名/地名)"},
+  {"token": "FRACAS", "expected": "fr", "desc": "组3 法语刊名，历史误判pt/en人名"},
+  {"token": "Avec :", "expected": "fr", "desc": "组3 法语'与:'，历史误判en"},
+  {"token": "SOIRÉE DE LANCEMENT", "expected": "fr", "desc": "组3 法语'发布之夜'，正确fr"},
+  {"token": "LE MÉDIA DES COMBATS ÉCOLOGIQUES", "expected": "fr", "desc": "组3 法语整句，正确fr"},
+
+  {"token": "DIE LANGE NACHT DER WISSENSCHAFTEN", "expected": "de", "desc": "组4 德语'科学之夜'，正确de"},
+  {"token": "U-BAHN", "expected": "de", "desc": "组4 德语'地铁'，历史误判en(人名/地名)"},
+  {"token": "DER MENSCH ALS U-BAHNSCHACHT", "expected": "de", "desc": "组4 德语整句，正确de"},
+  {"token": "Gute Nacht!", "expected": "de", "desc": "组4 德语'晚安'，正确de"},
+  {"token": "6. JUNI 2026", "expected": "de", "desc": "组4 德语日期，疑似误判en"},
+
+  {"token": "passando para te lembrar que", "expected": "pt", "desc": "组5 葡语社媒整句，历史误判es"},
+  {"token": "SUA MARCA!", "expected": "pt", "desc": "组5 葡语'你的品牌'，历史误判it"},
+  {"token": "IDENTIDADE VISUAL", "expected": "pt", "desc": "组5 葡语'视觉识别'，正确pt"},
+  {"token": "marca é comportamento", "expected": "pt", "desc": "组5 葡语整句，正确pt"},
+  {"token": "@ahist", "expected": "und", "desc": "组5 社媒账号句柄，正确und（不判en）"}
+]
