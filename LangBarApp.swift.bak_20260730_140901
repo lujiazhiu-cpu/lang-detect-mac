@@ -15834,69 +15834,52 @@ func mergeParagraphBlocks(_ bs: [Block]) -> [Block] {
     func mergeable(_ lang: String) -> Bool {
         return lang != "und" && lang != "name" && lang != "num" && lang != "zh"
     }
-    // 对称判断：两块是否属于同一段落（不依赖数组顺序）。
-    //   归一化坐标原点在左下：minY 越大越靠屏幕上方，minY 较大者视为 upper。
-    //   多栏杂志布局下，必须要求“水平方向显著重叠”才能合并，否则不同栏但 Y 相近的行会跨栏误并。
-    func canMerge(_ a: Block, _ b: Block) -> Bool {
-        let upper = a.box.minY >= b.box.minY ? a : b
-        let lower = a.box.minY >= b.box.minY ? b : a
+    // upper 在上（minY 更大），lower 紧邻其下：判断是否可并入同一段落
+    func canMerge(_ upper: Block, _ lower: Block) -> Bool {
         let lineH = max(upper.box.height, lower.box.height)
         if lineH <= 0 { return false }
         let vGap = upper.box.minY - lower.box.maxY   // 上块底边 - 下块顶边
         if vGap > 1.5 * lineH { return false }        // 竖直间距过大 → 不合并
-        if vGap < -0.5 * lineH { return false }        // 重叠过多/顺序异常 → 不合并
+        if vGap < -0.5 * lineH { return false }        // 顺序异常/重叠过多 → 不合并
         let ox = min(upper.box.maxX, lower.box.maxX) - max(upper.box.minX, lower.box.minX)
-        let minW = max(0.0001, min(upper.box.width, lower.box.width))
-        let overlapRatio = ox / minW                   // 水平重叠占较窄块宽度比例
-        return overlapRatio >= 0.5                      // 同栏（≥50% 重叠）才合并，杜绝跨栏
+        let overlap = ox > 0                           // 水平方向有重叠
+        let leftClose = abs(upper.box.minX - lower.box.minX) < 0.05  // 左边缘接近
+        return overlap || leftClose
     }
-    // 分离不可合并块（und/name/num/zh 原样保留）
     var result: [Block] = []
     var pool: [Block] = []
     for b in bs {
         if mergeable(b.lang) { pool.append(b) } else { result.append(b) }
     }
-    let n = pool.count
-    if n == 0 { return result }
-    // 并查集：任意两块同语种且 canMerge 成立即 union（对称，摆脱“数组相邻=图像相邻”假设）
-    var parent = Array(0..<n)
-    func find(_ x: Int) -> Int {
-        var r = x
-        while parent[r] != r { parent[r] = parent[parent[r]]; r = parent[r] }
-        return r
+    // 阅读顺序：从上到下 minY 降序；同高再按 minX 升序
+    let sorted = pool.sorted { a, b in
+        if abs(a.box.minY - b.box.minY) > 0.005 { return a.box.minY > b.box.minY }
+        return a.box.minX < b.box.minX
     }
-    func union(_ x: Int, _ y: Int) {
-        let rx = find(x), ry = find(y)
-        if rx != ry { parent[rx] = ry }
-    }
-    for i in 0..<n {
-        for j in (i + 1)..<n {
-            if pool[i].lang == pool[j].lang && canMerge(pool[i], pool[j]) {
-                union(i, j)
-            }
+    var i = 0
+    while i < sorted.count {
+        var group: [Block] = [sorted[i]]
+        var cur = sorted[i]
+        var j = i + 1
+        while j < sorted.count {
+            let nxt = sorted[j]
+            if nxt.lang == cur.lang && canMerge(cur, nxt) {
+                group.append(nxt); cur = nxt; j += 1
+            } else { break }
         }
-    }
-    // 按并查集根分组
-    var groups: [Int: [Int]] = [:]
-    for i in 0..<n { groups[find(i), default: []].append(i) }
-    for (_, idxs) in groups {
-        if idxs.count == 1 {
-            result.append(pool[idxs[0]])
+        if group.count == 1 {
+            result.append(group[0])
         } else {
-            // 组内按阅读顺序拼接：minY 降序、同高 minX 升序
-            let ordered = idxs.sorted { p, q in
-                if abs(pool[p].box.minY - pool[q].box.minY) > 0.005 { return pool[p].box.minY > pool[q].box.minY }
-                return pool[p].box.minX < pool[q].box.minX
-            }
-            let minX = ordered.map { pool[$0].box.minX }.min()!
-            let minY = ordered.map { pool[$0].box.minY }.min()!
-            let maxX = ordered.map { pool[$0].box.maxX }.max()!
-            let maxY = ordered.map { pool[$0].box.maxY }.max()!
-            let text = ordered.map { pool[$0].text }.joined(separator: "\n")
+            let minX = group.map { $0.box.minX }.min()!
+            let minY = group.map { $0.box.minY }.min()!
+            let maxX = group.map { $0.box.maxX }.max()!
+            let maxY = group.map { $0.box.maxY }.max()!
+            let text = group.map { $0.text }.joined(separator: "\n")
             result.append(Block(text: text,
                                 box: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
-                                lang: pool[ordered[0]].lang))
+                                lang: group[0].lang))
         }
+        i = j
     }
     return result
 }
