@@ -15992,10 +15992,8 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
     if true {
     let fontSize = max(16, H * 0.014)
     let font = NSFont.boldSystemFont(ofSize: fontSize)
-    // 已回退段落合并（准确率优先）：恢复逐行标注。
-    //   合并在封面/海报等大字号+多栏+含图形的布局下会跨图形过度合并成巨框，且无法用几何阈值稳健区分，
-    //   而合并仅为视觉美化、不提升识别准确率，故回退到逐行标注最忠实。mergeParagraphBlocks 保留但不再调用。
-    let renderBlocks = blocks
+    // 仅绘制用：同语种连续行合并成段落框（统计口径仍基于合并前的 blocks/breakdown）
+    let renderBlocks = mergeParagraphBlocks(blocks)
     for b in renderBlocks {
         let rect = CGRect(x: b.box.minX * W, y: b.box.minY * H,
                           width: b.box.width * W, height: b.box.height * H)
