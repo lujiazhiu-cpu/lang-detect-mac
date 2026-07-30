@@ -15827,6 +15827,63 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
     return blocks
 }
 
+// ---- 同语种连续行合并为段落标注框（仅用于绘制，不改变占比统计口径）----
+//   仅合并真实语种块；und/name/num/zh 不参与合并，原样保留。
+//   Vision 归一化坐标系原点在左下：minY 越大越靠屏幕上方。
+func mergeParagraphBlocks(_ bs: [Block]) -> [Block] {
+    func mergeable(_ lang: String) -> Bool {
+        return lang != "und" && lang != "name" && lang != "num" && lang != "zh"
+    }
+    // upper 在上（minY 更大），lower 紧邻其下：判断是否可并入同一段落
+    func canMerge(_ upper: Block, _ lower: Block) -> Bool {
+        let lineH = max(upper.box.height, lower.box.height)
+        if lineH <= 0 { return false }
+        let vGap = upper.box.minY - lower.box.maxY   // 上块底边 - 下块顶边
+        if vGap > 1.5 * lineH { return false }        // 竖直间距过大 → 不合并
+        if vGap < -0.5 * lineH { return false }        // 顺序异常/重叠过多 → 不合并
+        let ox = min(upper.box.maxX, lower.box.maxX) - max(upper.box.minX, lower.box.minX)
+        let overlap = ox > 0                           // 水平方向有重叠
+        let leftClose = abs(upper.box.minX - lower.box.minX) < 0.05  // 左边缘接近
+        return overlap || leftClose
+    }
+    var result: [Block] = []
+    var pool: [Block] = []
+    for b in bs {
+        if mergeable(b.lang) { pool.append(b) } else { result.append(b) }
+    }
+    // 阅读顺序：从上到下 minY 降序；同高再按 minX 升序
+    let sorted = pool.sorted { a, b in
+        if abs(a.box.minY - b.box.minY) > 0.005 { return a.box.minY > b.box.minY }
+        return a.box.minX < b.box.minX
+    }
+    var i = 0
+    while i < sorted.count {
+        var group: [Block] = [sorted[i]]
+        var cur = sorted[i]
+        var j = i + 1
+        while j < sorted.count {
+            let nxt = sorted[j]
+            if nxt.lang == cur.lang && canMerge(cur, nxt) {
+                group.append(nxt); cur = nxt; j += 1
+            } else { break }
+        }
+        if group.count == 1 {
+            result.append(group[0])
+        } else {
+            let minX = group.map { $0.box.minX }.min()!
+            let minY = group.map { $0.box.minY }.min()!
+            let maxX = group.map { $0.box.maxX }.max()!
+            let maxY = group.map { $0.box.maxY }.max()!
+            let text = group.map { $0.text }.joined(separator: "\n")
+            result.append(Block(text: text,
+                                box: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY),
+                                lang: group[0].lang))
+        }
+        i = j
+    }
+    return result
+}
+
 func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed: Bool,
               singleDominant: Bool, dominantLang: String, outPath: String) {
     let W = CGFloat(cg.width), H = CGFloat(cg.height)
@@ -15909,7 +15966,9 @@ func annotate(_ cg: CGImage, blocks: [Block], breakdown: [(String, Int)], mixed:
     if true {
     let fontSize = max(16, H * 0.014)
     let font = NSFont.boldSystemFont(ofSize: fontSize)
-    for b in blocks {
+    // 仅绘制用：同语种连续行合并成段落框（统计口径仍基于合并前的 blocks/breakdown）
+    let renderBlocks = mergeParagraphBlocks(blocks)
+    for b in renderBlocks {
         let rect = CGRect(x: b.box.minX * W, y: b.box.minY * H,
                           width: b.box.width * W, height: b.box.height * H)
         let c = color(b.lang)
