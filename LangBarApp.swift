@@ -14953,7 +14953,119 @@ func ftLabelToCode(_ label: String) -> String? {
     }
 }
 
-// 调用 fastText 判定单块文本语种；不可用/失败/超时 → nil
+// ============================================================
+// MARK: - fastText 常驻守护进程（性能关键：避免每块重载 126MB 模型）
+// ============================================================
+// 背景：旧实现对每个 OCR 块都新起一个 `fasttext predict-prob` 子进程，而 fastText
+//   每次启动都会把 lid.176.bin（约 126MB）整模型重新加载进内存。大段文字 = 几十个块
+//   = 几十次 126MB 模型重载 → 单张截图卡顿数秒甚至十几秒。
+// 方案：启动「一个」常驻 fasttext 进程（`predict-prob model - 1` 天然支持 stdin 逐行读取、
+//   逐行输出），模型只加载一次，之后每块查询仅写一行/读一行，耗时降到亚毫秒级。
+//   • 全程串行（单锁），逻辑简单、无并发竞态；模型常驻，串行也极快。
+//   • 每次查询带 4s 超时：一旦超时/异常 → 标记守护进程失效并回退到「单次子进程」旧路径，
+//     保证行为不劣化、绝不会永久卡死。
+//   • 环境变量 LANGBAR_DISABLE_FT_DAEMON=1 可关闭守护进程，强制回退旧逐次子进程实现。
+let ftDaemonEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_FT_DAEMON"] == nil
+
+final class FastTextDaemon {
+    enum QueryResult { case dead; case value((code: String, prob: Double)?) }
+    private let lock = NSLock()
+    private var proc: Process?
+    private var writeH: FileHandle?
+    private var readH: FileHandle?
+    private var buffer = Data()
+    private var started = false
+    private var dead = false
+
+    private func startLocked() {
+        guard !started else { return }
+        started = true
+        guard ftDaemonEnabled, let bin = fastTextBin, let model = fastTextModel else { dead = true; return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["predict-prob", model, "-", "1"]
+        let inPipe = Pipe(); let outPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { dead = true; return }
+        proc = p
+        writeH = inPipe.fileHandleForWriting
+        readH = outPipe.fileHandleForReading
+    }
+
+    // 从常驻进程 stdout 阻塞读取「一行」（fastText 对每行输入恰好输出一行）。
+    private func readLineLocked() -> String? {
+        guard let rh = readH else { return nil }
+        while true {
+            if let idx = buffer.firstIndex(of: 0x0A) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<idx)
+                buffer.removeSubrange(buffer.startIndex...idx)
+                return String(data: lineData, encoding: .utf8)
+            }
+            let chunk = rh.availableData
+            if chunk.isEmpty { return nil }   // EOF / 进程退出
+            buffer.append(chunk)
+        }
+    }
+
+    private func markDeadLocked() {
+        dead = true
+        proc?.terminate()
+    }
+
+    func query(_ text: String) -> QueryResult {
+        lock.lock(); defer { lock.unlock() }
+        if dead { return .dead }
+        startLocked()
+        if dead { return .dead }
+        guard let wh = writeH else { markDeadLocked(); return .dead }
+        let payload = text.replacingOccurrences(of: "\n", with: " ")
+                          .replacingOccurrences(of: "\r", with: " ") + "\n"
+        guard let data = payload.data(using: .utf8) else { return .value(nil) }
+        var out: String? = nil
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            wh.write(data)
+            out = self.readLineLocked()
+            sem.signal()
+        }
+        if sem.wait(timeout: .now() + 4) == .timedOut { markDeadLocked(); return .dead }
+        guard let o = out else { markDeadLocked(); return .dead }
+        // 输出形如: "__label__it 0.8734"
+        let parts = o.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+        guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
+              let prob = Double(parts[1]) else { return .value(nil) }
+        return .value((code, prob))
+    }
+}
+let ftDaemon = FastTextDaemon()
+
+// 旧「单次子进程」实现，作为守护进程失效时的兜底（行为与升级前完全一致）。
+func fastTextLangLegacy(_ text: String, bin: String, model: String) -> (code: String, prob: Double)? {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: bin)
+    proc.arguments = ["predict-prob", model, "-", "1"]
+    let inPipe = Pipe(); let outPipe = Pipe()
+    proc.standardInput = inPipe
+    proc.standardOutput = outPipe
+    proc.standardError = Pipe()
+    do { try proc.run() } catch { return nil }
+    let oneLine = text.replacingOccurrences(of: "\n", with: " ")
+                      .replacingOccurrences(of: "\r", with: " ") + "\n"
+    inPipe.fileHandleForWriting.write(oneLine.data(using: .utf8) ?? Data())
+    inPipe.fileHandleForWriting.closeFile()
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    guard let out = String(data: outData, encoding: .utf8) else { return nil }
+    let parts = out.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+    guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
+          let prob = Double(parts[1]) else { return nil }
+    return (code, prob)
+}
+
+// 调用 fastText 判定单块文本语种；不可用/失败/超时 → nil。
+// 优先走常驻守护进程（模型常驻，秒级 → 毫秒级）；守护进程失效时回退到单次子进程旧路径。
 func fastTextLang(_ text: String) -> (code: String, prob: Double)? {
     guard fastTextAvailable, let bin = fastTextBin, let model = fastTextModel else { return nil }
     let key = normalizedKey(text)
@@ -14961,30 +15073,13 @@ func fastTextLang(_ text: String) -> (code: String, prob: Double)? {
     if let cached = ftCache[key] { ftCacheLock.unlock(); return cached.value }
     ftCacheLock.unlock()
 
-    let result: (code: String, prob: Double)? = {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: bin)
-        // predict-prob <model> - 1 : 从 stdin 读入，输出 top-1 标签及概率
-        proc.arguments = ["predict-prob", model, "-", "1"]
-        let inPipe = Pipe(); let outPipe = Pipe()
-        proc.standardInput = inPipe
-        proc.standardOutput = outPipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-        // fastText 按行分样本：换行折叠成空格，保证单行输入
-        let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-                          .replacingOccurrences(of: "\r", with: " ") + "\n"
-        inPipe.fileHandleForWriting.write(oneLine.data(using: .utf8) ?? Data())
-        inPipe.fileHandleForWriting.closeFile()
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        guard let out = String(data: outData, encoding: .utf8) else { return nil }
-        // 输出形如: "__label__it 0.8734"
-        let parts = out.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
-        guard parts.count >= 2, let code = ftLabelToCode(String(parts[0])),
-              let prob = Double(parts[1]) else { return nil }
-        return (code, prob)
-    }()
+    let result: (code: String, prob: Double)?
+    switch ftDaemon.query(text) {
+    case .value(let v):
+        result = v
+    case .dead:
+        result = fastTextLangLegacy(text, bin: bin, model: model)
+    }
 
     ftCacheLock.lock(); ftCache[key] = FTCacheEntry(value: result); ftCacheLock.unlock()
     return result
@@ -15866,7 +15961,10 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
         //   也可放心把中低置信行归到该主语种。仅作为下方低置信行纠错的「放宽信号」，
         //   不直接改写 pageLang（避免与 de/pt 锁定链冲突）。
         var pageMonoLang: String? = nil
-        if parts.count >= 2 {
+        // 性能：detect_multiple_languages_of 是 lingua 最重的操作，且对整页长文本耗时随长度快速上升。
+        //   pageMono 主要用于「封面短词行」的放宽信号；块数很多（大段文字）时 pageLang 本身已足够可靠，
+        //   此时跳过 pageMono，避免在大段文字场景引入数秒额外开销。仅当块数较少(≤20)时才计算。
+        if parts.count >= 2 && parts.count <= 20 {
             let pageText = parts.joined(separator: " ")
             if let mono = linguaPageMono(pageText), allowedLangCodes.contains(mono.lang), mono.ratio >= 0.85 {
                 pageMonoLang = mono.lang
@@ -15935,12 +16033,14 @@ func runDetect(shotPath: String, annoPath: String) -> DetectResult? {
                 guard b.lang != "name" && b.lang != "zh" && b.lang != "num" else { return b }
                 if b.lang == pl { return b }
                 if blockHardHit(b.text) { return b }     // 硬命中豁免
-                let ftP = fastTextLang(b.text)?.prob ?? 0
-                let nlP = nlDetect(b.text)?.prob ?? 0
-                // 行级 lingua 复判：若 lingua 对该行也判为 pageLang 则直接覆盖（无论 ftP/nlP）
+                // 行级 lingua 复判优先（走批量预热缓存，零子进程）：若 lingua 对该行也判为 pageLang
+                //   则直接覆盖，且无需再触发 fastText/NL —— 大段文字下省去大量判定开销。
                 if let linR = linguaLang(b.text), linR.code == pl, linR.confidence >= 0.40 {
                     return Block(text: b.text, box: b.box, lang: pl)
                 }
+                // 仅在 lingua 未命中时才惰性计算 fastText / NL 置信度
+                let ftP = fastTextLang(b.text)?.prob ?? 0
+                let nlP = nlDetect(b.text)?.prob ?? 0
                 // 段落级混语切分放宽：整页实质单语(pageMonoLang==pl)时，把覆盖门槛从
                 //   0.45 放宽到 0.60 —— 封面短词行单独易混，但整页已确认单语，可归主语种。
                 if pageMonoLang == pl && ftP < 0.60 && nlP < 0.60 {
