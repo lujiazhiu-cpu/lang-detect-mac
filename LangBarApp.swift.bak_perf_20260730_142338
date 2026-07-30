@@ -15869,17 +15869,8 @@ func mergeParagraphBlocks(_ bs: [Block]) -> [Block] {
         let rx = find(x), ry = find(y)
         if rx != ry { parent[rx] = ry }
     }
-    // 提速：按 minY 降序，仅在竖直邻近窗口内两两判断，利用 vGap 早停避免 O(n^2) 全配对。
-    //   能合并的两块 vGap <= 1.5*lineH，故一旦候选块 maxY 低于当前块 minY 超过 1.5*maxLineH，
-    //   后续块（更低）不可能再与当前块合并，直接 break——不漏任何合法配对，结果与全配对等价。
-    let maxLineH = pool.map { $0.box.height }.max() ?? 0
-    let order = Array(0..<n).sorted { pool[$0].box.minY > pool[$1].box.minY }
-    for a in 0..<n {
-        let i = order[a]
-        let iMinY = pool[i].box.minY
-        for b in (a + 1)..<n {
-            let j = order[b]
-            if pool[j].box.maxY < iMinY - 1.5 * maxLineH { break }
+    for i in 0..<n {
+        for j in (i + 1)..<n {
             if pool[i].lang == pool[j].lang && canMerge(pool[i], pool[j]) {
                 union(i, j)
             }
