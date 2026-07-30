@@ -85,9 +85,54 @@ def _detect_multi(text):
     return out
 
 
+def _detect_one(detector, text):
+    """单文本判定：返回 {\"lang\":..,\"confidence\":..}，与单语模式口径完全一致。"""
+    out = {"lang": "und", "confidence": 0.0}
+    try:
+        if not text or not text.strip():
+            return out
+        # 全大写转小写再识别，解决 AOÛT/VOILES/NEU IM STIFT 被误判英语的问题
+        text_for_detect = text
+        stripped = text.strip()
+        if stripped.upper() == stripped and any(c.isalpha() for c in stripped):
+            text_for_detect = stripped.lower()
+        conf = detector.compute_language_confidence_values(text_for_detect)
+        if conf:
+            top = conf[0]
+            code = top.language.iso_code_639_1.name.lower()
+            confidence = float(top.value)
+            # 置信度太低（两个候选接近）时返回 und，不乱猜
+            if len(conf) >= 2:
+                second = float(conf[1].value)
+                if confidence - second < 0.10 and confidence < 0.50:
+                    return {"lang": "und", "confidence": 0.0}
+            out = {"lang": code, "confidence": confidence}
+    except Exception:
+        out = {"lang": "und", "confidence": 0.0}
+    return out
+
+
 def main():
     is_multi = "--multi" in sys.argv[1:]
     is_batch = "--batch" in sys.argv[1:]
+    is_serve = "--serve" in sys.argv[1:]
+
+    # 常驻模式：只构建一次 detector，然后逐行读 stdin，对每行执行与单文本模式
+    #   完全相同的判定逻辑（_detect_one），每行输出恰好一行 JSON 并 flush。
+    #   空行/异常 → {"lang":"und","confidence":0.0}；EOF 自然退出。严格一行进一行出。
+    if is_serve:
+        detector = _build_detector()
+        for line in sys.stdin:
+            line = line.rstrip("\n").rstrip("\r")
+            out = {"lang": "und", "confidence": 0.0}
+            try:
+                if line.strip():
+                    out = _detect_one(detector, line)
+            except Exception:
+                out = {"lang": "und", "confidence": 0.0}
+            sys.stdout.write(json.dumps(out) + "\n")
+            sys.stdout.flush()
+        return 0
 
     # 批量模式：stdin 读 JSON 字符串数组，一次建 detector，输出对齐的结果数组。
     #   目的是把"每个 OCR 块一个子进程(各~0.7s 冷启动)"降为"整页一次子进程"。
@@ -133,35 +178,11 @@ def main():
         print(json.dumps(_detect_multi(text)))
         return 0
 
-    out = {"lang": "und", "confidence": 0.0}
-    try:
-        if not text or not text.strip():
-            print(json.dumps(out))
-            return 0
-
-        detector = _build_detector()
-
-        # 全大写转小写再识别，解决 AOÛT/VOILES/NEU IM STIFT 被误判英语的问题
-        text_for_detect = text
-        stripped = text.strip()
-        if stripped.upper() == stripped and any(c.isalpha() for c in stripped):
-            text_for_detect = stripped.lower()
-
-        conf = detector.compute_language_confidence_values(text_for_detect)
-        if conf:
-            top = conf[0]
-            code = top.language.iso_code_639_1.name.lower()
-            confidence = float(top.value)
-            # 置信度太低（两个候选接近）时返回 und，不乱猜
-            if len(conf) >= 2:
-                second = float(conf[1].value)
-                if confidence - second < 0.10 and confidence < 0.50:
-                    print(json.dumps(out))
-                    return 0
-            out = {"lang": code, "confidence": confidence}
-    except Exception:
-        out = {"lang": "und", "confidence": 0.0}
-    print(json.dumps(out))
+    if not text or not text.strip():
+        print(json.dumps({"lang": "und", "confidence": 0.0}))
+        return 0
+    detector = _build_detector()
+    print(json.dumps(_detect_one(detector, text)))
     return 0
 
 

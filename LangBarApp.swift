@@ -15127,48 +15127,147 @@ struct LinguaCacheEntry { let value: (code: String, confidence: Double)? }
 let linguaCacheLock = NSLock()
 var linguaCache: [String: LinguaCacheEntry] = [:]
 
+// ============================================================
+// MARK: - lingua 常驻守护进程（detector 常驻内存，消除每次子进程 import+建 detector 的 ~0.5s 开销）
+// ============================================================
+// 参照 FastTextDaemon：启动「一个」常驻 `python3 lingua_detect.py --serve` 进程，
+//   detector 只构建一次，之后每块查询仅写一行 / 读一行，耗时降到毫秒级。
+//   • 全程串行（单锁），无并发竞态。每次查询带 4s 超时：超时/EOF/异常 → 标记失效
+//     并回退到「单次子进程」旧路径（linguaLangLegacy），保证行为不劣化、绝不永久卡死。
+//   • 环境变量 LANGBAR_DISABLE_LINGUA_DAEMON=1 可关闭守护进程，强制回退旧逐次子进程实现。
+let linguaDaemonEnabled: Bool = ProcessInfo.processInfo.environment["LANGBAR_DISABLE_LINGUA_DAEMON"] == nil
+
+final class LinguaDaemon {
+    enum QueryResult { case dead; case value((code: String, confidence: Double)?) }
+    private let lock = NSLock()
+    private var proc: Process?
+    private var writeH: FileHandle?
+    private var readH: FileHandle?
+    private var buffer = Data()
+    private var started = false
+    private var dead = false
+
+    private func startLocked() {
+        guard !started else { return }
+        started = true
+        guard linguaDaemonEnabled, linguaAvailable, let py = python3Bin, let script = linguaScript else { dead = true; return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: py)
+        p.arguments = [script, "--serve"]
+        let inPipe = Pipe(); let outPipe = Pipe()
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { dead = true; return }
+        proc = p
+        writeH = inPipe.fileHandleForWriting
+        readH = outPipe.fileHandleForReading
+    }
+
+    // 从常驻进程 stdout 阻塞读取「一行」（--serve 对每行输入恰好输出一行）。
+    private func readLineLocked() -> String? {
+        guard let rh = readH else { return nil }
+        while true {
+            if let idx = buffer.firstIndex(of: 0x0A) {
+                let lineData = buffer.subdata(in: buffer.startIndex..<idx)
+                buffer.removeSubrange(buffer.startIndex...idx)
+                return String(data: lineData, encoding: .utf8)
+            }
+            let chunk = rh.availableData
+            if chunk.isEmpty { return nil }   // EOF / 进程退出
+            buffer.append(chunk)
+        }
+    }
+
+    private func markDeadLocked() {
+        dead = true
+        proc?.terminate()
+    }
+
+    func query(_ text: String) -> QueryResult {
+        lock.lock(); defer { lock.unlock() }
+        if dead { return .dead }
+        startLocked()
+        if dead { return .dead }
+        guard let wh = writeH else { markDeadLocked(); return .dead }
+        let payload = text.replacingOccurrences(of: "\n", with: " ")
+                          .replacingOccurrences(of: "\r", with: " ") + "\n"
+        guard let data = payload.data(using: .utf8) else { return .value(nil) }
+        var out: String? = nil
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            wh.write(data)
+            out = self.readLineLocked()
+            sem.signal()
+        }
+        if sem.wait(timeout: .now() + 4) == .timedOut { markDeadLocked(); return .dead }
+        guard let o = out else { markDeadLocked(); return .dead }
+        // 输出形如: {"lang":"de","confidence":0.86}
+        guard let jd = o.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: jd) as? [String: Any],
+              let lang = (obj["lang"] as? String)?.lowercased() else { return .value(nil) }
+        let conf = (obj["confidence"] as? Double) ?? 0.0
+        if lang == "und" { return .value(nil) }
+        return .value((lang, conf))
+    }
+}
+let linguaDaemon = LinguaDaemon()
+
 // 调用 lingua_detect.py 判定文本语种；不可用/失败/超时 → nil。超时 2 秒。
 func linguaLang(_ text: String) -> (code: String, confidence: Double)? {
-    guard linguaAvailable, let py = python3Bin, let script = linguaScript else { return nil }
+    guard linguaAvailable, let _ = python3Bin, let _ = linguaScript else { return nil }
     let key = normalizedKey(text)
     linguaCacheLock.lock()
     if let cached = linguaCache[key] { linguaCacheLock.unlock(); return cached.value }
     linguaCacheLock.unlock()
 
-    let result: (code: String, confidence: Double)? = {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: py)
-        proc.arguments = [script, text]
-        let outPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = Pipe()
-        do { try proc.run() } catch { return nil }
-        // 2 秒超时：后台看门狗到点 terminate 进程，回退 fastText 结果。
-        let timedOut = NSLock()
-        var didTimeout = false
-        let watchdog = DispatchWorkItem {
-            if proc.isRunning {
-                timedOut.lock(); didTimeout = true; timedOut.unlock()
-                proc.terminate()
-            }
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: watchdog)
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        watchdog.cancel()
-        timedOut.lock(); let to = didTimeout; timedOut.unlock()
-        if to { return nil }
-        guard let out = String(data: outData, encoding: .utf8),
-              let jd = out.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: jd) as? [String: Any],
-              let lang = obj["lang"] as? String else { return nil }
-        let conf = (obj["confidence"] as? Double) ?? 0.0
-        if lang == "und" { return nil }
-        return (lang.lowercased(), conf)
-    }()
+    // 优先走常驻守护进程（detector 常驻内存，秒级 → 毫秒级）；
+    //   守护进程失效(.dead)时回退到「单次子进程」旧路径 linguaLangLegacy，行为与升级前一致。
+    let result: (code: String, confidence: Double)?
+    switch linguaDaemon.query(text) {
+    case .value(let v):
+        result = v
+    case .dead:
+        result = linguaLangLegacy(text)
+    }
 
     linguaCacheLock.lock(); linguaCache[key] = LinguaCacheEntry(value: result); linguaCacheLock.unlock()
     return result
+}
+
+// 旧「单次子进程」实现，作为守护进程失效时的兜底（行为与升级前完全一致）。
+//   注意：缓存查/写由调用方 linguaLang 统一处理，这里只负责起一次子进程判定。
+func linguaLangLegacy(_ text: String) -> (code: String, confidence: Double)? {
+    guard linguaAvailable, let py = python3Bin, let script = linguaScript else { return nil }
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: py)
+    proc.arguments = [script, text]
+    let outPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = Pipe()
+    do { try proc.run() } catch { return nil }
+    // 2 秒超时：后台看门狗到点 terminate 进程，回退 fastText 结果。
+    let timedOut = NSLock()
+    var didTimeout = false
+    let watchdog = DispatchWorkItem {
+        if proc.isRunning {
+            timedOut.lock(); didTimeout = true; timedOut.unlock()
+            proc.terminate()
+        }
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2.0, execute: watchdog)
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    watchdog.cancel()
+    timedOut.lock(); let to = didTimeout; timedOut.unlock()
+    if to { return nil }
+    guard let out = String(data: outData, encoding: .utf8),
+          let jd = out.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: jd) as? [String: Any],
+          let lang = obj["lang"] as? String else { return nil }
+    let conf = (obj["confidence"] as? Double) ?? 0.0
+    if lang == "und" { return nil }
+    return (lang.lowercased(), conf)
 }
 
 // 批量预热 lingua 缓存：一次子进程处理所有文本，避免"每块一个子进程(各~0.7s 冷启动)"。
