@@ -15385,14 +15385,38 @@ func linguaPageMono(_ text: String) -> (lang: String, ratio: Double)? {
 //   3) 其余 → 保留既有结果
 func linguaReconsider(_ nlInput: String, base: (String, Bool)) -> (String, Bool)? {
     guard linguaEnabled, linguaAvailable else { return nil }
-    // 只对拉丁语系行复判，非拉丁脚本（ru/ja/ko/th/ar/zh）硬规则已命中，不干预
-    guard linguaReconsiderLangs.contains(base.0) else { return nil }
     let toks = latinTokens(nlInput).filter { !isNumericToken($0) }
     guard toks.count >= 1 else { return nil }  // 无拉丁词则不触发
+    // 复判触发范围：既有拉丁语种块 + name/und（后者用于修「德语等复合词被误判专名/未识别」）
+    let isLatinLang = linguaReconsiderLangs.contains(base.0)
+    let isNameOrUnd = (base.0 == "name" || base.0 == "und")
+    guard isLatinLang || isNameOrUnd else { return nil }
     guard let lg = linguaLang(nlInput) else { return nil }
-    guard allowedLangCodes.contains(lg.code) else { return nil }
     let ft = fastTextLang(nlInput)
-    let ftProb = ft?.prob ?? 0.0
+
+    // A) name/und 覆盖：仅在 lingua 高置信(≥0.90)时改判为具体在册语种，
+    //    避免误伤真正的人名/地名（其 lingua 置信通常达不到 0.90）。
+    if isNameOrUnd {
+        if allowedLangCodes.contains(lg.code) && lg.confidence >= 0.90 {
+            return (lg.code, true)
+        }
+        return nil
+    }
+
+    // B) 反“伪德语”：base 判 de 但文本无任何德语特征(变音符/词根/词缀)，
+    //    lingua 认为是其它在册语种(≥0.30) → 采信 lingua；连语种都判不出 → 退 und。
+    if base.0 == "de" {
+        let hasUmlaut = nlInput.contains(where: { "äöüßÄÖÜ".contains($0) })
+        let germanish = hasUmlaut || hasGermanFeature(toks)
+        if !germanish {
+            if allowedLangCodes.contains(lg.code) && lg.code != "de" && lg.confidence >= 0.30 {
+                return (lg.code, true)
+            }
+            return ("und", false)
+        }
+    }
+
+    guard allowedLangCodes.contains(lg.code) else { return nil }
     // 高置信：lingua >= 0.55，直接采信（无论 fastText 怎么说）
     if lg.confidence >= 0.55 {
         return (lg.code, true)
