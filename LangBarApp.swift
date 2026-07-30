@@ -15651,6 +15651,12 @@ func ocrBlocks(_ cg: CGImage) -> [Block] {
         if let obs = request.results as? [VNRecognizedTextObservation] {
             // 先抽取每个 block 的首选文本，便于取相邻 block 作为短词上下文（方向2）
             let texts: [String] = obs.map { $0.topCandidates(1).first?.string ?? "" }
+            // 【性能关键·大段文字提速】逐块判定「之前」一次性预热 lingua 缓存：
+            //   linguaReconsider 现对每个拉丁块都调用 linguaLang()，若不预热则每块各起一个
+            //   python 子进程(~0.6s)，大段文字累计十几秒。这里用一次 --batch 调用把所有块文本
+            //   的 lingua 结果写入缓存，逐块判定时全部命中缓存、零子进程。（linguaBatchPrewarm
+            //   内部按 normalizedKey 去重并跳过已缓存，重复调用安全。）
+            if linguaAvailable { linguaBatchPrewarm(texts.filter { !$0.isEmpty }) }
             for (i, o) in obs.enumerated() {
                 guard let cand = o.topCandidates(1).first else { continue }
                 let s = cand.string
